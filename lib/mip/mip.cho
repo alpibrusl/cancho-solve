@@ -8,6 +8,7 @@ module solve.mip;
 // by plunging (the child of the node just solved, in place) or by restoring (the root's optimal tableau, the path's bounds, `refresh`, the dual simplex). See lpeng.cho for the LP side.
 // Everything is in minimisation form inside the search (z = sign * (c x + c0)) and converted at the end. Nothing here reads a clock or a hash: the same model and options give the same bytes.
 
+import solve.cuts as cu;
 import solve.layout as l;
 import solve.lpeng as le;
 import solve.simplex as sx;
@@ -155,31 +156,80 @@ fn prunable(z: float, have: bool, inc: float, whole: bool) -> [] bool {
     return z >= inc - 1e-9 * (1.0 + mag(inc));
 }
 
-// The rounded point tx[j] (integer columns rounded, others as the LP has them) of the LP in w, then offered as an incumbent. Returns true when it replaced the incumbent.
-fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: &!d [float], mi: &e [int], m: int, n: int, o_v: int, o_tx: int, o_isint: int, o_inc: int, o_ix: int, inc_have: bool, whole: bool) -> [] bool {
-    var j = 0;
-    while j < n {
-        if mi[o_isint + j] == 1 {
-            mf[o_tx + j] = fround(w[o_v + j]);
-        } else {
-            mf[o_tx + j] = w[o_v + j];
+// Rounded points of the LP in w, each offered as an incumbent; returns true when one replaced it. `modes` is how many of the four roundings are tried: 0 every integer column to the
+// nearest whole number (the others as the LP has them), 1 every fractional integer column up, 2 down, 3 by locks: up when only a decrease can break a row, down when only an increase
+// can, the nearest otherwise (docs/design.md 19.8). The first alone is what the search offered before 19.8; the integral case still uses it alone, its caller reads tx afterwards.
+fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: &!d [float], mi: &e [int], m: int, n: int, o_v: int, o_tx: int, o_isint: int, o_inc: int, o_ix: int, o_ul: int, o_dl: int, inc_have: bool, whole: bool, modes: int) -> [] bool {
+    var improved = false;
+    var have2 = inc_have;
+    var mode = 0;
+    while mode < modes {
+        var j = 0;
+        while j < n {
+            let v = w[o_v + j];
+            if mi[o_isint + j] == 1 {
+                var t = fround(v);
+                if mag(v - t) > 1e-9 {
+                    if mode == 1 {
+                        t = ffloor(v) + 1.0;
+                    } else if mode == 2 {
+                        t = ffloor(v);
+                    } else if mode == 3 {
+                        if mi[o_ul + j] == 0 && mi[o_dl + j] > 0 {
+                            t = ffloor(v) + 1.0;
+                        } else if mi[o_dl + j] == 0 && mi[o_ul + j] > 0 {
+                            t = ffloor(v);
+                        }
+                    }
+                }
+                mf[o_tx + j] = t;
+            } else {
+                mf[o_tx + j] = v;
+            }
+            j = j + 1;
         }
-        j = j + 1;
+        if rows_ok(ints, fl, mf, o_tx, 1e-7) {
+            let z = objective_at(ints, fl, mf, o_tx);
+            if !have2 || z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc])) {
+                mf[o_inc] = z;
+                j = 0;
+                while j < n {
+                    mf[o_ix + j] = mf[o_tx + j];
+                    j = j + 1;
+                }
+                have2 = true;
+                improved = true;
+            }
+        }
+        mode = mode + 1;
     }
-    if !rows_ok(ints, fl, mf, o_tx, 1e-7) {
-        return false;
+    return improved;
+}
+
+// For each column, how many rows an increase of it could break (mi[o_ul + j]) and how many a decrease could (mi[o_dl + j]).
+fn locks[&a, &b, &c](ints: &a [int], fl: &b [float], mi: &!c [int], n: int, o_ul: int, o_dl: int) -> [] int {
+    var r = 0;
+    while r < ints[l.h_ncons()] {
+        let s = ints[l.row_sense(r)];
+        var t = ints[l.row_start(r)];
+        while t < ints[l.row_start(r + 1)] {
+            let a = fl[l.term_coef(t)];
+            let j = ints[l.term_col(t)];
+            if a != 0.0 {
+                let up = s == 2 || s == 0 && a > 0.0 || s == 1 && a < 0.0;
+                let dn = s == 2 || s == 1 && a > 0.0 || s == 0 && a < 0.0;
+                if up {
+                    mi[o_ul + j] = mi[o_ul + j] + 1;
+                }
+                if dn {
+                    mi[o_dl + j] = mi[o_dl + j] + 1;
+                }
+            }
+            t = t + 1;
+        }
+        r = r + 1;
     }
-    let z = objective_at(ints, fl, mf, o_tx);
-    if inc_have && !(z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {
-        return false;
-    }
-    mf[o_inc] = z;
-    j = 0;
-    while j < n {
-        mf[o_ix + j] = mf[o_tx + j];
-        j = j + 1;
-    }
-    return true;
+    return 0;
 }
 
 // The integer column to branch on, or -1 when every integer column is within `tol` of a whole number. mode 0: the fractional part closest to one half; mode 1: pseudo-costs.
@@ -281,6 +331,43 @@ fn pick_open[&a, &b](mf: &a [float], mi: &!b [int], o_bd: int, o_open: int, o_no
     return found;
 }
 
+// Reduced-cost fixing at the root (docs/design.md 19.8): with the root's optimal state (rw, rwi, value zroot) and an incumbent inc, a nonbasic integer column cannot move more than
+// floor((inc - delta - zroot) / |d_j|) units away from its root bound in a solution that beats the incumbent, because z >= zroot + sum d_j (x_j - bound_j). The global bounds
+// mf[o_l0 + j], mf[o_h0 + j] shrink accordingly; every node restored from now on starts from them. Returns how many columns were tightened.
+fn rc_fix[&a, &b, &c, &d](eng: int, rw: &a [float], rwi: &b [int], mf: &!c [float], mi: &d [int], m: int, n: int, o_isint: int, o_l0: int, o_h0: int, zroot: float, inc: float, whole: bool) -> [] int {
+    var delta = 1e-9 * (1.0 + mag(inc));
+    if whole {
+        delta = 1.0 - 1e-6;
+    }
+    let slack = inc - delta - zroot;
+    var fixed = 0;
+    if slack < 0.0 {
+        return 0;
+    }
+    var j = 0;
+    while j < n {
+        if mi[o_isint + j] == 1 {
+            let at = le.at_state(eng, rwi, m, n, j);
+            let dj = le.rcost(eng, rw, rwi, m, n, j);
+            if at == 0 && dj > 1e-9 {
+                let nh = mf[o_l0 + j] + ffloor(slack / dj + 1e-9);
+                if nh < mf[o_h0 + j] {
+                    mf[o_h0 + j] = nh;
+                    fixed = fixed + 1;
+                }
+            } else if at == 1 && dj < -1e-9 {
+                let nl = mf[o_h0 + j] - ffloor(slack / (0.0 - dj) + 1e-9);
+                if nl > mf[o_l0 + j] {
+                    mf[o_l0 + j] = nl;
+                    fixed = fixed + 1;
+                }
+            }
+        }
+        j = j + 1;
+    }
+    return fixed;
+}
+
 // Everything the search keeps, laid out in two slices (`mf`, `mi`) and addressed by these offsets. kcap is the capacity of the node arena.
 fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int, eng: int, fi: &!s1 [int], ff: &!s2 [float]) -> [] int {
     let big = n + m;
@@ -315,6 +402,8 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
     let o_pcu = ic + n;
     let o_pcd = ic + 2 * n;
     let o_nopen = ic + 3 * n;
+    let o_ul = ic + 3 * n + 1;
+    let o_dl = ic + 4 * n + 1;
     // per-column data from the checked model
     var k2 = 0;
     while k2 < ints[l.h_nsym()] {
@@ -334,6 +423,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
         }
         k2 = k2 + 1;
     }
+    locks(ints, fl, mi, n, o_ul, o_dl);
     var whole = objective_whole(ints, fl, mi, o_isint);
     if exper % 2 == 1 {
         whole = false;
@@ -348,6 +438,8 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
     var reason = 0;
     var finished = false;
     var extra = 1e300;
+    var zroot = 0.0;
+    var rcfix = 0;
     mi[o_nopen] = 0;
     // ---- the root
     var st = 0;
@@ -398,6 +490,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                 le.copy_f(rw, w);
                 le.copy_i(rwi, wi);
                 z = objective_at(ints, fl, w, o_v);
+                zroot = z;
             }
         }
     }
@@ -420,18 +513,24 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                 var jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
                 if jb < 0 {
                     // integral: offer the rounded point; if its rows fail at the tight tolerance, branch on the least integral column instead
-                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, o_ul, o_dl, have, whole, 1) {
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
+                        if exper / 16 % 2 == 0 {
+                            rcfix = rcfix + rc_fix(eng, rw, rwi, mf, mi, m, n, o_isint, o_l0, o_h0, zroot, inc, whole);
+                        }
                     } else if !rows_ok(ints, fl, mf, o_tx, 1e-7) {
                         jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, 0, 1e-9);
                     }
-                } else if exper / 2 % 2 == 0 && mi[o_dep + cur] <= 8 {
-                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                } else if exper / 2 % 2 == 0 && (mi[o_dep + cur] <= 8 || !have) {
+                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, o_ul, o_dl, have, whole, 4) {
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
+                        if exper / 16 % 2 == 0 {
+                            rcfix = rcfix + rc_fix(eng, rw, rwi, mf, mi, m, n, o_isint, o_l0, o_h0, zroot, inc, whole);
+                        }
                     }
                 }
                 if jb >= 0 && !prunable(z, have, inc, whole) {
@@ -484,7 +583,14 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
             var nxt = plunge;
             let inplace = plunge >= 0;
             if !inplace {
-                nxt = pick_open(mf, mi, o_bd, o_open, o_nopen, sel, have, inc, whole);
+                var smode = sel;
+                if sel == 2 {
+                    smode = 0;
+                    if have {
+                        smode = 1;
+                    }
+                }
+                nxt = pick_open(mf, mi, o_bd, o_open, o_nopen, smode, have, inc, whole);
             }
             if nxt < 0 {
                 finished = true;
@@ -606,13 +712,13 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
 
 // Solves the MIP of the checked model. `x` (length at least n) gets the incumbent; `fres` (length 2) the objective and the best bound, both in the model's own sense (a bound of
 // 1e300 means none is known). `stats`: 0 iterations, 1 rows, 2 columns, 3 nodes whose LP was solved, 4 limit (0 none, 1 nodes, 2 iterations, 3 lp-limit), 5 nodes branched,
-// 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best), 3 branching (0 fractional,
+// 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best, 2 hybrid: depth until the first incumbent, then best bound), 3 branching (0 fractional,
 // 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
-pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
+fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], m_report: int) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     stats[0] = 0;
-    stats[1] = m;
+    stats[1] = m_report;
     stats[2] = n;
     stats[3] = 0;
     stats[4] = 0;
@@ -634,7 +740,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
     let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
     let mf = box_slice(heap, 4 * kcap + 8 * n + 8, 0.0);
-    let mi = box_slice(heap, 5 * kcap + 3 * n + 8, 0);
+    let mi = box_slice(heap, 5 * kcap + 5 * n + 8, 0);
     var code = 0;
     borrow mut w as &!w1 in {
         borrow mut wi as &!w2 in {
@@ -661,5 +767,50 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     unbox_slice(heap, rw);
     unbox_slice(heap, wi);
     unbox_slice(heap, w);
+    return code;
+}
+
+// Solves the MIP of the checked model. With the implied cuts of docs/design.md 19.8 (unless experiment bit 8 is set) the search runs on a copy of the model with the cut rows appended;
+// stats[1] still reports the model's own rows and stats[9] the number of cuts.
+pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    var code = 0;
+    var cuts = 0;
+    if opts[4] / 8 % 2 == 1 || opts[1] < 1 || m < 2 {
+        code = search_in(heap, ints, fl, x, stats, fres, opts, m);
+    } else {
+        let i2 = box_slice(heap, l.ints_len(), 0);
+        let f2 = box_slice(heap, l.fl_len(), 0.0);
+        let si = box_slice(heap, 4 * n + 8, 0);
+        let sf = box_slice(heap, 4 * n + 8, 0.0);
+        borrow mut i2 as &!b1 in {
+            borrow mut f2 as &!b2 in {
+                let iv = contents(b1);
+                let fv = contents(b2);
+                var q = 0;
+                while q < l.ints_len() {
+                    iv[q] = ints[q];
+                    q = q + 1;
+                }
+                q = 0;
+                while q < l.fl_len() {
+                    fv[q] = fl[q];
+                    q = q + 1;
+                }
+                borrow mut si as &!b3 in {
+                    borrow mut sf as &!b4 in {
+                        cuts = cu.generate(ints, fl, iv, fv, contents(b3), contents(b4));
+                    }
+                }
+                code = search_in(heap, iv, fv, x, stats, fres, opts, m);
+            }
+        }
+        unbox_slice(heap, sf);
+        unbox_slice(heap, si);
+        unbox_slice(heap, f2);
+        unbox_slice(heap, i2);
+    }
+    stats[9] = cuts;
     return code;
 }

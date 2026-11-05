@@ -4,7 +4,7 @@ against it; a mutant is killed when a gate fails. Needs CANCHO=the compiler. Usa
 import os, shutil, subprocess, sys, tempfile
 
 CANCHO = os.environ["CANCHO"]
-SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "lib/mip/lpeng.cho", "lib/mip/mip.cho", "lib/verify/verify.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
+SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "lib/mip/lpeng.cho", "lib/mip/mip.cho", "lib/mip/cuts.cho", "lib/verify/verify.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
 
 # (file, old, new, what it breaks)
 MUTANTS = [
@@ -60,11 +60,11 @@ MUTANTS = [
     ("lib/mip/mip.cho", "let dist = fmin(f, 1.0 - f);", "let dist = fmax(f, 1.0 - f);", "an integral column is branched on"),
     ("lib/mip/mip.cho", "return z >= inc - 1e-9 * (1.0 + mag(inc));", "return z > inc - 1e-9 * (1.0 + mag(inc));", "a node as good as the incumbent is not cut"),
     ("lib/mip/mip.cho", "return z > inc - 1.0 + 1e-6;", "return z > inc - 2.0 + 1e-6;", "the whole-objective cut is off by one and cuts improving nodes"),
-    ("lib/mip/mip.cho", "if inc_have && !(z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {", "if inc_have && !(z > mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {", "the incumbent is replaced by a worse point"),
-    ("lib/mip/mip.cho", "mf[o_tx + j] = fround(w[o_v + j]);", "mf[o_tx + j] = w[o_v + j];", "integer columns are not rounded"),
+    ("lib/mip/mip.cho", "if !have2 || z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc])) {", "if !have2 || z > mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc])) {", "the incumbent is replaced by a worse point"),
+    ("lib/mip/mip.cho", "var t = fround(v);", "var t = v;", "integer columns are not rounded"),
     ("lib/mip/mip.cho", "mf[o_hi + idn] = fv;", "mf[o_hi + idn] = mf[o_bh + jb];", "the down child does not tighten its bound"),
     ("lib/mip/mip.cho", "mf[o_lo + idu] = fv + 1.0;", "mf[o_lo + idu] = fv;", "the up child's bound is one too low"),
-    ("lib/mip/mip.cho", "le.refresh(w, wi, m, n);\n                        var lim = dcap;", "var lim = dcap;", "the basic values are not refreshed after a bound change"),
+    ("lib/mip/mip.cho", "                        st = le.refresh(eng, w, wi, fi, ff, m, n);\n                        var lim = dcap;", "                        var lim = dcap;", "the basic values are not refreshed after a bound change"),
     ("lib/mip/mip.cho", "v = mi[o_par + v];", "v = 0;", "restoring applies only the last change of the path"),
     ("lib/mip/mip.cho", "if b < best {\n            best = b;", "if b > best {\n            best = b;", "the best bound is the largest open bound"),
     ("lib/mip/mip.cho", "bmode, 1e-6);\n                if jb < 0 {", "bmode, 0.3);\n                if jb < 0 {", "a loose integrality tolerance"),
@@ -72,7 +72,7 @@ MUTANTS = [
     ("lib/mip/mip.cho", "if v - fv < 0.5 {", "if v - fv > 0.5 {", "the plunge goes to the far child"),
     ("lib/mip/mip.cho", "if bk < ba || bk == ba && mi[o_open + k] < mi[o_open + at] {", "if bk > ba || bk == ba && mi[o_open + k] < mi[o_open + at] {", "best-bound selection takes the worst bound"),
     ("lib/mip/mip.cho", "var at = cnt - 1;", "var at = 0;", "depth-first takes the oldest open node"),
-    ("lib/mip/mip.cho", "if !rows_ok(ints, fl, mf, o_tx, 1e-7) {\n        return false;", "if !rows_ok(ints, fl, mf, o_tx, 1.0) {\n        return false;", "a rounded point is accepted with violated rows"),
+    ("lib/mip/mip.cho", "if rows_ok(ints, fl, mf, o_tx, 1e-7) {\n            let z = objective_at(ints, fl, mf, o_tx);", "if rows_ok(ints, fl, mf, o_tx, 1.0) {\n            let z = objective_at(ints, fl, mf, o_tx);", "a rounded point is accepted with violated rows"),
     ("lib/mip/mip.cho", "if s == 2 && mag(act - rhs) > sc {", "if s == 2 && mag(act - rhs) > 1e9 {", "an equality row is not checked on a rounded point"),
     ("lib/mip/mip.cho", "le.copy_f(w, rw);", "le.copy_f(rw, w);", "restoring overwrites the root tableau"),
     ("lib/mip/mip.cho", "if mf[o_bl + cc] > mf[o_bh + cc] {\n                            empty = true;", "if mf[o_bl + cc] >= mf[o_bh + cc] {\n                            empty = true;", "a fixed column makes the node infeasible"),
@@ -106,6 +106,22 @@ MUTANTS = [
     ("tools/solve/emit.cho", "    if stats[8] == 1 {\n        w = json.put_string(heap, w, \"sparse\");", "    if stats[8] == 0 {\n        w = json.put_string(heap, w, \"sparse\");", "[sparse] the report names the wrong engine"),
     ("lib/mip/mip.cho", "            if st > sx.s_limit() {\n                reason = 4;\n                running = false;\n                extra = -1e300;\n            } else if st == sx.s_limit() {", "            if st > 77 {\n                reason = 4;\n                running = false;\n                extra = -1e300;\n            } else if st == sx.s_limit() {", "[sparse] numerical trouble at the root is read as a limit"),
 
+    ("lib/mip/mip.cho", "t = ffloor(v) + 1.0;\n                    } else if mode == 2 {", "t = ffloor(v);\n                    } else if mode == 2 {", "the up rounding rounds down"),
+    ("lib/mip/mip.cho", "} else if mode == 2 {\n                        t = ffloor(v);", "} else if mode == 2 {\n                        t = ffloor(v) + 1.0;", "the down rounding rounds up"),
+    ("lib/mip/mip.cho", "if mi[o_ul + j] == 0 && mi[o_dl + j] > 0 {", "if mi[o_ul + j] > 0 && mi[o_dl + j] == 0 {", "the lock rounding goes the unsafe way"),
+    ("lib/mip/mip.cho", "let up = s == 2 || s == 0 && a > 0.0 || s == 1 && a < 0.0;", "let up = s == 2 || s == 0 && a < 0.0 || s == 1 && a < 0.0;", "a <= row with a positive coefficient does not lock the increase"),
+    ("lib/mip/mip.cho", "if have {\n                        smode = 1;", "if !have {\n                        smode = 1;", "hybrid selection takes best bound before the first incumbent"),
+    ("lib/mip/mip.cho", "(mi[o_dep + cur] <= 8 || !have)", "(mi[o_dep + cur] <= 8)", "the heuristic stops running when there is no incumbent"),
+    ("lib/mip/mip.cho", "o_ul, o_dl, have, whole, 4)", "o_ul, o_dl, have, whole, 1)", "only the nearest rounding is tried at fractional nodes"),
+    ("lib/mip/mip.cho", "if at == 0 && dj > 1e-9 {", "if at == 1 && dj > 1e-9 {", "reduced-cost fixing reads the wrong side"),
+    ("lib/mip/mip.cho", "let nh = mf[o_l0 + j] + ffloor(slack / dj + 1e-9);", "let nh = mf[o_l0 + j] + ffloor(slack / dj + 1e-9) - 1.0;", "reduced-cost fixing fixes one unit too many"),
+    ("lib/mip/mip.cho", "delta = 1.0 - 1e-6;\n    }\n    let slack", "delta = 2.0;\n    }\n    let slack", "reduced-cost fixing assumes an improvement of two when the objective is whole"),
+    ("lib/mip/mip.cho", "                zroot = z;\n", "                zroot = z + 1000.0;\n", "reduced-cost fixing starts from a root value that is too high"),
+    ("lib/mip/mip.cho", "if exper / 16 % 2 == 0 {\n                            rcfix", "if exper / 16 % 2 == 1 {\n                            rcfix", "reduced-cost fixing is off unless asked"),
+    ("lib/mip/mip.cho", "if nl > mf[o_l0 + j] {", "if nl >= mf[o_l0 + j] {", "(equivalent) a lower bound that does not change is counted as tightened"),
+    ("lib/mip/lpeng.cho", "    return w[m * (n + m) + j];\n}", "    return w[m * (n + m) + j + 1];\n}", "the dense reduced cost is read one column over"),
+    ("lib/mip/lpeng.cho", "return wi[m + n + m + j];", "return wi[m + j];", "the dense at-bound marker is read from the position array"),
+    ("tools/solve/main.cho", "var osel = 2;", "var osel = 1;", "the default node selection is best bound"),
 ]
 
 def build(root, out):
@@ -140,9 +156,10 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:
                 dead = True
                 break
-        print(("killed  " if dead else "SURVIVED") + f" {n}: {what}")
+        equivalent = what.startswith("(equivalent)")   # explained in design.md 19.8: it cannot change any output
+        print(("killed  " if dead else "explained" if equivalent else "SURVIVED") + f" {n}: {what}")
         killed += dead
-        survived += not dead
+        survived += (not dead) and not equivalent
 
 print(f"mutants: {killed} killed, {survived} survived, {invalid} invalid")
 sys.exit(1 if survived or invalid else 0)

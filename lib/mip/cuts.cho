@@ -1,0 +1,208 @@
+edition 7;
+
+module solve.cuts;
+
+// Implied cuts through variable upper bounds (docs/design.md section 19.8): for a covering row whose continuous columns have a variable upper bound `x <= c y` on an integer
+// column y, the row becomes `sum w y >= b` and the Chvatal-Gomory cut `sum ceil(w/d) y >= ceil(b/d)` is added, for the largest and the smallest weight d. The cuts are rows
+// appended to a copy of the checked model (the caller copies it first); nothing here reads a clock or a hash.
+//
+// Scratch (the caller allocates, zeroed): si has 4n + 8 cells (0: n integer flags; n: n variable-upper-bound columns, -1 when none; 2n: n touched columns; 3n: n marks),
+// sf has 4n + 8 cells (0: n lower bounds; n: n upper bounds; 2n: n variable-upper-bound ratios c; 3n: n weights).
+
+import solve.layout as l;
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+fn ffloor(v: float) -> [] float {
+    if v > 1e15 || v < -1e15 {
+        return v;
+    }
+    let t = float_of(truncate(v));
+    if t > v {
+        return t - 1.0;
+    }
+    return t;
+}
+
+fn fceil(v: float) -> [] float {
+    return 0.0 - ffloor(0.0 - v);
+}
+
+// A row `p x - q y <= 0` with x continuous, y integer and y >= 0 gives x <= (q / p) y; the tightest ratio is kept.
+fn note_vub[&a, &b](si: &!a [int], sf: &!b [float], n: int, x: int, p: float, y: int, q: float) -> [] int {
+    if x != y && si[x] == 0 && si[y] == 1 && p > 0.0 && q > 0.0 && sf[y] >= 0.0 {
+        let c = q / p;
+        if si[n + x] < 0 || c < sf[2 * n + x] {
+            si[n + x] = y;
+            sf[2 * n + x] = c;
+        }
+    }
+    return 0;
+}
+
+// Appends `sum cj y_j >= rhs` over the touched columns (weights in sf[3n + j]) divided by d to the copy; returns 1 when a row was added.
+fn put_cut[&a, &b, &c, &d](ints2: &!a [int], fl2: &!b [float], si: &c [int], sf: &d [float], n: int, nt: int, dv: float, b: float, row: int, nnz: int) -> [] int {
+    let rhs = fceil(b / dv - 1e-9);
+    if rhs < 1.0 || row + 1 > l.maxrows() || nnz + nt > l.maxnz() {
+        return 0;
+    }
+    var i = 0;
+    while i < nt {
+        let j = si[2 * n + i];
+        ints2[l.term_col(nnz + i)] = j;
+        fl2[l.term_coef(nnz + i)] = fceil(sf[3 * n + j] / dv - 1e-9);
+        i = i + 1;
+    }
+    ints2[l.row_start(row + 1)] = nnz + nt;
+    ints2[l.row_sense(row)] = 1;
+    fl2[l.row_rhs(row)] = rhs;
+    return 1;
+}
+
+// Adds the cuts to the copy (ints2, fl2) of (ints, fl); returns how many.
+pub fn generate[&a, &b, &c, &d, &e, &f](ints: &a [int], fl: &b [float], ints2: &!c [int], fl2: &!d [float], si: &!e [int], sf: &!f [float]) -> [] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let j = ints[l.sym_base(k)] + off;
+                sf[j] = fl[l.sym_lo(k)];
+                sf[n + j] = fl[l.sym_hi(k)];
+                si[n + j] = 0 - 1;
+                if ints[l.sym_kind(k)] < 2 {
+                    si[j] = 1;
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    var r = 0;
+    while r < m {
+        let s = ints[l.row_start(r)];
+        let sense = ints[l.row_sense(r)];
+        if ints[l.row_start(r + 1)] - s == 2 && sense != 2 && mag(fl[l.row_rhs(r)]) < 1e-12 {
+            var sg = 1.0;
+            if sense == 1 {
+                sg = 0.0 - 1.0;
+            }
+            let j1 = ints[l.term_col(s)];
+            let a1 = sg * fl[l.term_coef(s)];
+            let j2 = ints[l.term_col(s + 1)];
+            let a2 = sg * fl[l.term_coef(s + 1)];
+            note_vub(si, sf, n, j1, a1, j2, 0.0 - a2);
+            note_vub(si, sf, n, j2, a2, j1, 0.0 - a1);
+        }
+        r = r + 1;
+    }
+    var cap = m;
+    if cap > 4096 {
+        cap = 4096;
+    }
+    var cuts = 0;
+    var nnz = ints2[l.row_start(m)];
+    r = 0;
+    while r < m && cuts < cap {
+        let s = ints[l.row_start(r)];
+        let e = ints[l.row_start(r + 1)];
+        let sense = ints[l.row_sense(r)];
+        if sense != 2 && e - s >= 2 {
+            var sg = 1.0;
+            if sense == 0 {
+                sg = 0.0 - 1.0;
+            }
+            var b = sg * fl[l.row_rhs(r)];
+            var ok = true;
+            var used = false;
+            var nt = 0;
+            var t = s;
+            while t < e && ok {
+                let j = ints[l.term_col(t)];
+                let a = sg * fl[l.term_coef(t)];
+                var target = 0 - 1;
+                var w = 0.0;
+                if a > 0.0 {
+                    if si[j] == 1 {
+                        if sf[j] < 0.0 {
+                            ok = false;
+                        } else {
+                            target = j;
+                            w = a;
+                        }
+                    } else if si[n + j] >= 0 {
+                        target = si[n + j];
+                        w = a * sf[2 * n + j];
+                        used = true;
+                    } else if sf[n + j] > 1e20 {
+                        ok = false;
+                    } else {
+                        b = b - a * sf[n + j];
+                    }
+                } else if a < 0.0 {
+                    if sf[j] < -1e20 {
+                        ok = false;
+                    } else {
+                        b = b - a * sf[j];
+                    }
+                }
+                if target >= 0 {
+                    if si[3 * n + target] == 0 {
+                        si[3 * n + target] = 1;
+                        si[2 * n + nt] = target;
+                        nt = nt + 1;
+                    }
+                    sf[3 * n + target] = sf[3 * n + target] + w;
+                }
+                t = t + 1;
+            }
+            if ok && used && nt >= 2 && b > 1e-9 {
+                var wmax = sf[3 * n + si[2 * n]];
+                var wmin = wmax;
+                var i = 1;
+                while i < nt {
+                    let wi = sf[3 * n + si[2 * n + i]];
+                    if wi > wmax {
+                        wmax = wi;
+                    }
+                    if wi < wmin {
+                        wmin = wi;
+                    }
+                    i = i + 1;
+                }
+                if wmin > 1e-9 {
+                    let added = put_cut(ints2, fl2, si, sf, n, nt, wmax, b, m + cuts, nnz);
+                    if added == 1 {
+                        nnz = nnz + nt;
+                        cuts = cuts + 1;
+                    }
+                    if wmin < wmax - 1e-9 && cuts < cap {
+                        let added2 = put_cut(ints2, fl2, si, sf, n, nt, wmin, b, m + cuts, nnz);
+                        if added2 == 1 {
+                            nnz = nnz + nt;
+                            cuts = cuts + 1;
+                        }
+                    }
+                }
+            }
+            var i2 = 0;
+            while i2 < nt {
+                let jj = si[2 * n + i2];
+                si[3 * n + jj] = 0;
+                sf[3 * n + jj] = 0.0;
+                i2 = i2 + 1;
+            }
+        }
+        r = r + 1;
+    }
+    ints2[l.h_ncons()] = m + cuts;
+    ints2[l.h_nnz()] = nnz;
+    return cuts;
+}

@@ -1,0 +1,10 @@
+machine: macOS-26.2-arm64-arm-64bit-Mach-O, arm64; python 3.14.5; ortools 9.15.6755; limit 90.0s; ours: minimum of 3 runs under 5 s minus `solve check`; others: solver call only; seconds
+setting  V x T   cols   rows   LP: HiGHS  GLOP    CLP     ours    MIP: HiGHS  SCIP   CBC    ours         ours nodes  answer
+tight    12x12   288    324    0.002      <0.001  <0.001  <0.001  0.502       0.646  0.068  limit(time)  -           ok    
+tight    24x16   768    824    0.004      0.001   0.001   0.004   0.856       2.291  0.123  30.690       128510      ok    
+tight    36x20   1440   1516   0.008      0.003   0.002   0.011   limit       limit  limit  limit(time)  -           ok    
+tight    48x24   2304   2400   0.016      0.005   0.006   0.032   66.249      6.779  3.363  limit(time)  -           ok    
+tight    60x26   3120   3232   0.024      0.010   0.009   0.047   limit       limit  limit  limit(time)  -           ok    
+ample    48x24   2304   2400   0.011      0.003   0.003   0.028   0.010       0.008  0.010  0.044        1           ok    
+ample    96x32   6144   6304   0.022      0.007   0.013   0.221   0.030       0.021  0.027  0.248        1           ok    
+ample    144x40  11520  11744  0.044      0.014   0.036   0.690   0.067       0.055  0.060  0.774        1           ok    

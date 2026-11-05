@@ -44,12 +44,15 @@ python3 scripts/check_dense_vs_sparse.py # the dense solver as second oracle of 
 python3 scripts/check_mip.py --ortools # integer models against HiGHS MILP, enumeration, CP-SAT and SCIP (design.md 19.2)
 python3 scripts/check_nodes.py        # exact node and iteration counts of the search (design.md 19.2); SOLVE_METHOD=sparse for the sparse engine's table (19.6)
 python3 scripts/check_mip_engines.py  # the dense and the sparse LP engine of the search agree (design.md 19.6)
+python3 scripts/check_cuts.py          # implied cuts through variable upper bounds never change an answer (design.md 19.8; needs scipy)
+CANCHO=... python3 scripts/mutants_cuts.py # deliberate changes to the cut code; every one must be killed or explained (design.md 19.8)
 python3 scripts/check_verify.py       # `solve verify` accepts what is feasible and refuses faults with the right tag (design.md section 20; needs scipy)
 CANCHO=... python3 scripts/mutants_verify.py # deliberate changes to the verifier; every one must be killed or explained (design.md 20.6)
 python3 scripts/bench_highs.py        # time against HiGHS: docs/design.md sections 15 and 17
 CANCHO=... python3 scripts/mutants.py # deliberate changes to the checker; every one must be killed
 python3 scripts/gen_layout.py --check # lib/model/layout.cho is what the generator prints
 SOLVE=build/solve python3 scripts/site.py --check # docs/index.html, examples.html, stories.html are what the built binary prints today (python3 scripts/site.py writes them)
+python3 scripts/bench_scaling.py     # the EV-depot model grown, against HiGHS and OR-Tools; writes docs/bench/scaling.* (design.md section 21; needs ortools and scipy)
 ```
 
 **Verifying a solution (`docs/design.md` section 20).** `solve verify` re-checks a claimed solution, from `solve run` or any other solver, without the search: bounds, integrality, every row and the objective, to a tolerance (`--tolerance`, default 1e-6). Standard input is the model, a line `---`, then the solution as JSON (`solve run`'s output as it stands, or `{"x":{"x[0]":1,...},"objective":5}`):

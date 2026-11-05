@@ -499,6 +499,8 @@ pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, te
     } else {
         w = json.put_string(heap, w, "dense");
     }
+    w = json.put_key(heap, w, "cuts");
+    w = json.put_int(heap, w, stats[9]);
     w = json.end_object(heap, w);
     w = json.end_object(heap, w);
     print_json(heap, io, w);
@@ -532,7 +534,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = json.begin_array(heap, w);
     w = command(heap, w, "check", "read a .sol model and check it", "a .sol model", "status, class (LP or MIP), sizes and objective sense");
     w = command(heap, w, "expand", "read a .sol model and print the expanded flat model", "a .sol model", "the flat model as JSON: variables, objective, constraints");
-    w = command(heap, w, "run", "solve a .sol model: its LP, or by branch and bound when it has integer variables (flags: --relax, --iteration-limit N, --node-limit N, --node-select depth|best, --branching fractional|pseudo)", "a .sol model", "status (optimal, infeasible, feasible, unknown), objective, bound and gap when a limit stopped the search, x by name, stats, verified");
+    w = command(heap, w, "run", "solve a .sol model: its LP, or by branch and bound when it has integer variables (flags: --relax, --iteration-limit N, --node-limit N, --node-select depth|best|hybrid, --branching fractional|pseudo)", "a .sol model", "status (optimal, infeasible, feasible, unknown), objective, bound and gap when a limit stopped the search, x by name, stats, verified");
     w = command(heap, w, "verify", "re-check a claimed solution against the model, sharing no code with the search (flag: --tolerance T, default 1e-6); proves feasibility and the objective value, not optimality", "a .sol model, a line holding exactly ---, then the solution as JSON: solve run's output, or {\"x\":{name:value,...},\"objective\":v}", "status verified with the objective, the maximum violations and the tolerance; a failure is a refusal (exit 2) whose tag is the first violation and whose violations member lists them");
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
