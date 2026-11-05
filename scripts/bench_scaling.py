@@ -23,6 +23,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--runs", type=int, default=3)
 ap.add_argument("--limit", type=float, default=90.0)
 ap.add_argument("--max-v", type=int, default=1000)
+ap.add_argument("--settings", default="tight,ample", help="comma-separated settings to run (the ample ladder is the LP-bound one)")
 ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "bench", "scaling"))
 args = ap.parse_args()
 SOLVE = os.environ.get("SOLVE", "build/solve")
@@ -152,7 +153,7 @@ def agree(a, b):
 results, bad = [], 0
 print(f"machine: {platform.platform()}, {platform.machine()}; python {platform.python_version()}; ortools {ortools.__version__}; limit {args.limit}s; runs: minimum of {args.runs} under 5 s; ours: {SOLVE}", flush=True)
 for setting in ["tight", "ample"]:
-    for V, T in SIZES[setting]:
+    for V, T in (SIZES[setting] if setting in args.settings.split(',') else []):
         if V > args.max_v:
             continue
         text = generate(V, T, setting, 7)

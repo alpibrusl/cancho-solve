@@ -21,6 +21,8 @@ module solve.sparse;
 //   10 rstart, 11 rlen, 12 rcap, 13 rind, 14 cstart, 15 clen, 16 ccap, 17 cind, 18 pivrow, 19 pivcol, 20 rk, 21 ck, 22 lstart, 23 lrow, 24 ustart, 25 ucol, 26 ucstart,
 //   27 ucrow, 28 actc, 29 actpos, 30 cstk, 31 rstk, 32 cin, 33 rin, 34 mark, 35 estart, 36 epos, 37 eidx, 38 pm
 //   (the offsets of the arrays in `fi`), and 40 rval, 41 lval, 42 uval, 43 ucval, 44 piv, 45 w1, 46 w2, 47 eval, 48 ealpha (the offsets of the arrays in `ff`).
+//   For the hypersparse solves (design.md 21.2): 49 hp (heap), 50 hm (marks), 51 lrs, 52 lrk (L by rows: start, pivot number) in `fi`, and 53 w3 (a work vector that is all zero
+//   between calls) in `ff`.
 
 // results
 pub fn r_ok() -> [] int {
@@ -57,11 +59,11 @@ fn tiny() -> [] float {
 }
 
 pub fn ints_len(m: int, p: int, k: int, e: int) -> [] int {
-    return 64 + 18 * m + 3 * (m + 1) + 5 * p + (k + 1) + k + e;
+    return 64 + 18 * m + 3 * (m + 1) + 5 * p + (k + 1) + k + e + 2 * m + (m + 1) + p;
 }
 
 pub fn floats_len(m: int, p: int, k: int, e: int) -> [] int {
-    return 8 + 4 * p + 3 * m + e + k;
+    return 8 + 4 * p + 3 * m + e + k + m;
 }
 
 // Writes the header. `p` is the pool size, `k` the most etas, `e` the most eta entries. Returns 0.
@@ -130,6 +132,14 @@ pub fn init[&a](fi: &!a [int], m: int, p: int, k: int, e: int) -> [] int {
     o = o + e;
     fi[38] = o;
     o = o + m;
+    fi[49] = o;
+    o = o + m;
+    fi[50] = o;
+    o = o + m;
+    fi[51] = o;
+    o = o + m + 1;
+    fi[52] = o;
+    o = o + p;
     // the arrays of `ff`
     var q = 8;
     fi[40] = q;
@@ -149,6 +159,8 @@ pub fn init[&a](fi: &!a [int], m: int, p: int, k: int, e: int) -> [] int {
     fi[47] = q;
     q = q + e;
     fi[48] = q;
+    q = q + k;
+    fi[53] = q;
     return 0;
 }
 
@@ -593,6 +605,7 @@ pub fn factor[&a, &b, &c, &d, &e](fi: &!a [int], ff: &!b [float], bstart: &c [in
         }
         k = k + 1;
     }
+    build_lrows(fi, ff);
     return r_ok();
 }
 
@@ -787,4 +800,438 @@ pub fn l_max[&a, &b](fi: &a [int], ff: &b [float]) -> [] float {
         e = e + 1;
     }
     return best;
+}
+
+// ---- Hypersparse solves (design.md 21.2). A vector is a dense slice plus the list of the indices that may be nonzero (every nonzero is in the list, an explicit zero may be).
+// The triangular solves visit the nonzero pivots only, in pivot order, from a binary heap; `hm` marks what is listed, `w3` is the work vector by pivot number.
+
+// L by rows: for each row i of B the pivots k whose multipliers touch it (`lrs`, `lrk`; the values are read from L itself); also zeroes the marks and the work vector.
+fn build_lrows[&a, &b](fi: &!a [int], ff: &!b [float]) -> [] int {
+    let m = fi[0];
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_lrs = fi[51];
+    let o_lrk = fi[52];
+    let o_hm = fi[50];
+    let o_w3 = fi[53];
+    var i = 0;
+    while i <= m {
+        fi[o_lrs + i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while i < m {
+        fi[o_hm + i] = 0;
+        ff[o_w3 + i] = 0.0;
+        i = i + 1;
+    }
+    var e = 0;
+    while e < fi[6] {
+        fi[o_lrs + fi[o_lr + e] + 1] = fi[o_lrs + fi[o_lr + e] + 1] + 1;
+        e = e + 1;
+    }
+    i = 0;
+    while i < m {
+        fi[o_lrs + i + 1] = fi[o_lrs + i + 1] + fi[o_lrs + i];
+        i = i + 1;
+    }
+    // fill, using the marks as the counts so far
+    var k = 0;
+    while k < m {
+        e = fi[o_ls + k];
+        while e < fi[o_ls + k + 1] {
+            let row = fi[o_lr + e];
+            let at = fi[o_lrs + row] + fi[o_hm + row];
+            fi[o_lrk + at] = k;
+            fi[o_hm + row] = fi[o_hm + row] + 1;
+            e = e + 1;
+        }
+        k = k + 1;
+    }
+    i = 0;
+    while i < m {
+        fi[o_hm + i] = 0;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// A binary min-heap of ints in `fi[base ..]`: push `v` into a heap of `n` items, new size.
+fn hpush[&a](fi: &!a [int], base: int, n: int, v: int) -> [] int {
+    var c = n;
+    while c > 0 {
+        let par = (c - 1) / 2;
+        if fi[base + par] <= v {
+            fi[base + c] = v;
+            return n + 1;
+        }
+        fi[base + c] = fi[base + par];
+        c = par;
+    }
+    fi[base] = v;
+    return n + 1;
+}
+
+// Removes the smallest item (the caller has read it from `fi[base]`) of a heap of `n` items; the new size is `n - 1`.
+fn hpop[&a](fi: &!a [int], base: int, n: int) -> [] int {
+    let last = fi[base + n - 1];
+    let sz = n - 1;
+    var c = 0;
+    var going = true;
+    while going {
+        var ch = 2 * c + 1;
+        if ch >= sz {
+            going = false;
+        } else {
+            if ch + 1 < sz && fi[base + ch + 1] < fi[base + ch] {
+                ch = ch + 1;
+            }
+            if fi[base + ch] >= last {
+                going = false;
+            } else {
+                fi[base + c] = fi[base + ch];
+                c = ch;
+            }
+        }
+    }
+    if sz > 0 {
+        fi[base + c] = last;
+    }
+    return sz;
+}
+
+// FTRAN for a sparse right-hand side. `x` holds b by row on entry, `idx[0 .. cnt]` lists the rows where it may be nonzero (no row twice); on return `x` holds the answer by
+// position and the result is the length of the list `idx` of the positions where it may be nonzero. `idx` has room for `m` indices. Does the operations of `ftran`, in the same order.
+pub fn ftran_h[&a, &b, &c, &d](fi: &!a [int], ff: &!b [float], x: &!c [float], idx: &!d [int], cnt: int) -> [] int {
+    let m = fi[0];
+    let o_pr = fi[18];
+    let o_pc = fi[19];
+    let o_rk = fi[20];
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_ucs = fi[26];
+    let o_ucr = fi[27];
+    let o_hp = fi[49];
+    let o_hm = fi[50];
+    let o_lv = fi[41];
+    let o_ucv = fi[43];
+    let o_pv = fi[44];
+    let o_w3 = fi[53];
+    var hn = 0;
+    var nl = 0;
+    var t = 0;
+    while t < cnt {
+        let i = idx[t];
+        if fi[o_hm + i] == 0 {
+            fi[o_hm + i] = 1;
+            idx[nl] = i;
+            nl = nl + 1;
+            hn = hpush(fi, o_hp, hn, fi[o_rk + i]);
+        }
+        t = t + 1;
+    }
+    // L: pivots in increasing order
+    while hn > 0 {
+        let k = fi[o_hp];
+        hn = hpop(fi, o_hp, hn);
+        let tv = x[fi[o_pr + k]];
+        if tv != 0.0 {
+            var e = fi[o_ls + k];
+            while e < fi[o_ls + k + 1] {
+                let i = fi[o_lr + e];
+                x[i] = x[i] - ff[o_lv + e] * tv;
+                if fi[o_hm + i] == 0 {
+                    fi[o_hm + i] = 1;
+                    idx[nl] = i;
+                    nl = nl + 1;
+                    hn = hpush(fi, o_hp, hn, fi[o_rk + i]);
+                }
+                e = e + 1;
+            }
+        }
+    }
+    // to pivot numbers; U: pivots in decreasing order (the heap holds m - 1 - k)
+    t = 0;
+    while t < nl {
+        let i = idx[t];
+        let k = fi[o_rk + i];
+        ff[o_w3 + k] = x[i];
+        x[i] = 0.0;
+        fi[o_hm + i] = 0;
+        idx[t] = k;
+        t = t + 1;
+    }
+    t = 0;
+    while t < nl {
+        let k = idx[t];
+        fi[o_hm + k] = 1;
+        hn = hpush(fi, o_hp, hn, m - 1 - k);
+        t = t + 1;
+    }
+    while hn > 0 {
+        let k = m - 1 - fi[o_hp];
+        hn = hpop(fi, o_hp, hn);
+        if ff[o_w3 + k] != 0.0 {
+            let xk = ff[o_w3 + k] / ff[o_pv + k];
+            ff[o_w3 + k] = xk;
+            var e = fi[o_ucs + k];
+            while e < fi[o_ucs + k + 1] {
+                let r = fi[o_ucr + e];
+                ff[o_w3 + r] = ff[o_w3 + r] - ff[o_ucv + e] * xk;
+                if fi[o_hm + r] == 0 {
+                    fi[o_hm + r] = 1;
+                    idx[nl] = r;
+                    nl = nl + 1;
+                    hn = hpush(fi, o_hp, hn, m - 1 - r);
+                }
+                e = e + 1;
+            }
+        }
+    }
+    // to positions
+    t = 0;
+    while t < nl {
+        let k = idx[t];
+        fi[o_hm + k] = 0;
+        let pos = fi[o_pc + k];
+        x[pos] = ff[o_w3 + k];
+        ff[o_w3 + k] = 0.0;
+        idx[t] = pos;
+        t = t + 1;
+    }
+    t = 0;
+    while t < nl {
+        fi[o_hm + idx[t]] = 1;
+        t = t + 1;
+    }
+    // the etas, oldest first
+    let o_es = fi[35];
+    let o_ep = fi[36];
+    let o_ei = fi[37];
+    let o_ev = fi[47];
+    let o_ea = fi[48];
+    var n = 0;
+    while n < fi[4] {
+        let r = fi[o_ep + n];
+        if x[r] != 0.0 {
+            let tt = x[r] / ff[o_ea + n];
+            x[r] = tt;
+            if tt != 0.0 {
+                var e = fi[o_es + n];
+                while e < fi[o_es + n + 1] {
+                    let i = fi[o_ei + e];
+                    x[i] = x[i] - ff[o_ev + e] * tt;
+                    if fi[o_hm + i] == 0 {
+                        fi[o_hm + i] = 1;
+                        idx[nl] = i;
+                        nl = nl + 1;
+                    }
+                    e = e + 1;
+                }
+            }
+        }
+        n = n + 1;
+    }
+    t = 0;
+    while t < nl {
+        fi[o_hm + idx[t]] = 0;
+        t = t + 1;
+    }
+    return nl;
+}
+
+// BTRAN for a sparse right-hand side. `y` holds c by position, `idx[0 .. cnt]` the positions where it may be nonzero (a position listed twice is taken once); on return `y` holds
+// the answer by row and the result is the length of the list `idx` of the rows where it may be nonzero. `idx` has room for `m` indices. The operations are those of `btran`, in
+// the same order (the `L^T` part gathers its sums as `btran` does, visiting only the pivots whose sums can be nonzero), so the answer is `btran`'s bit for bit.
+pub fn btran_h[&a, &b, &c, &d](fi: &!a [int], ff: &!b [float], y: &!c [float], idx: &!d [int], cnt: int) -> [] int {
+    let m = fi[0];
+    let o_pr = fi[18];
+    let o_rk = fi[20];
+    let o_ck = fi[21];
+    let o_us = fi[24];
+    let o_uc = fi[25];
+    let o_uv = fi[42];
+    let o_pv = fi[44];
+    let o_hp = fi[49];
+    let o_hm = fi[50];
+    let o_lrs = fi[51];
+    let o_lrk = fi[52];
+    let o_w3 = fi[53];
+    let o_pc = fi[19];
+    var nl = 0;
+    var t = 0;
+    while t < cnt {
+        let pos = idx[t];
+        if fi[o_hm + pos] == 0 {
+            fi[o_hm + pos] = 1;
+            idx[nl] = pos;
+            nl = nl + 1;
+        }
+        t = t + 1;
+    }
+    // the etas, newest first
+    let o_es = fi[35];
+    let o_ep = fi[36];
+    let o_ei = fi[37];
+    let o_ev = fi[47];
+    let o_ea = fi[48];
+    var n = fi[4] - 1;
+    while n >= 0 {
+        let r = fi[o_ep + n];
+        var s = y[r];
+        var e = fi[o_es + n];
+        while e < fi[o_es + n + 1] {
+            s = s - ff[o_ev + e] * y[fi[o_ei + e]];
+            e = e + 1;
+        }
+        let nv = s / ff[o_ea + n];
+        y[r] = nv;
+        if nv != 0.0 && fi[o_hm + r] == 0 {
+            fi[o_hm + r] = 1;
+            idx[nl] = r;
+            nl = nl + 1;
+        }
+        n = n - 1;
+    }
+    // to pivot numbers; U^T: pivots in increasing order
+    var hn = 0;
+    t = 0;
+    while t < nl {
+        let pos = idx[t];
+        let k = fi[o_ck + pos];
+        ff[o_w3 + k] = y[pos];
+        y[pos] = 0.0;
+        fi[o_hm + pos] = 0;
+        idx[t] = k;
+        t = t + 1;
+    }
+    t = 0;
+    while t < nl {
+        let k = idx[t];
+        fi[o_hm + k] = 1;
+        hn = hpush(fi, o_hp, hn, k);
+        t = t + 1;
+    }
+    while hn > 0 {
+        let k = fi[o_hp];
+        hn = hpop(fi, o_hp, hn);
+        if ff[o_w3 + k] != 0.0 {
+            let z = ff[o_w3 + k] / ff[o_pv + k];
+            ff[o_w3 + k] = z;
+            var e = fi[o_us + k];
+            while e < fi[o_us + k + 1] {
+                let c2 = fi[o_uc + e];
+                ff[o_w3 + c2] = ff[o_w3 + c2] - ff[o_uv + e] * z;
+                if fi[o_hm + c2] == 0 {
+                    fi[o_hm + c2] = 1;
+                    idx[nl] = c2;
+                    nl = nl + 1;
+                    hn = hpush(fi, o_hp, hn, c2);
+                }
+                e = e + 1;
+            }
+        }
+    }
+    // to rows; L^T: pivots in decreasing order (the heap holds m - 1 - k). Each pivot taken is first finished by the gather of `btran` (y[pr k] - the sum over its multipliers
+    // of l * y[row]; the rows of those multipliers have later pivots, so they are final), then, when its value is nonzero, it puts on the heap the earlier pivots whose
+    // multipliers it enters: the arithmetic is that of `btran`, bit for bit.
+    t = 0;
+    while t < nl {
+        let k = idx[t];
+        fi[o_hm + k] = 0;
+        let row = fi[o_pr + k];
+        y[row] = ff[o_w3 + k];
+        ff[o_w3 + k] = 0.0;
+        idx[t] = row;
+        t = t + 1;
+    }
+    t = 0;
+    while t < nl {
+        let row = idx[t];
+        fi[o_hm + row] = 1;
+        hn = hpush(fi, o_hp, hn, m - 1 - fi[o_rk + row]);
+        t = t + 1;
+    }
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_lv = fi[41];
+    while hn > 0 {
+        let k = m - 1 - fi[o_hp];
+        hn = hpop(fi, o_hp, hn);
+        let row = fi[o_pr + k];
+        var sum = 0.0;
+        var e = fi[o_ls + k];
+        while e < fi[o_ls + k + 1] {
+            sum = sum + ff[o_lv + e] * y[fi[o_lr + e]];
+            e = e + 1;
+        }
+        y[row] = y[row] - sum;
+        if y[row] != 0.0 {
+            e = fi[o_lrs + row];
+            while e < fi[o_lrs + row + 1] {
+                let row2 = fi[o_pr + fi[o_lrk + e]];
+                if fi[o_hm + row2] == 0 {
+                    fi[o_hm + row2] = 1;
+                    idx[nl] = row2;
+                    nl = nl + 1;
+                    hn = hpush(fi, o_hp, hn, m - 1 - fi[o_lrk + e]);
+                }
+                e = e + 1;
+            }
+        }
+    }
+    t = 0;
+    while t < nl {
+        fi[o_hm + idx[t]] = 0;
+        t = t + 1;
+    }
+    return nl;
+}
+
+// Sorts `idx[0 .. cnt]` into increasing order (through the heap area of `fi`, which is free between solves; `cnt` is at most `m`).
+pub fn sort_idx[&a, &b](fi: &!a [int], idx: &!b [int], cnt: int) -> [] int {
+    let o_hp = fi[49];
+    var hn = 0;
+    var t = 0;
+    while t < cnt {
+        hn = hpush(fi, o_hp, hn, idx[t]);
+        t = t + 1;
+    }
+    t = 0;
+    while t < cnt {
+        idx[t] = fi[o_hp];
+        hn = hpop(fi, o_hp, hn);
+        t = t + 1;
+    }
+    return 0;
+}
+
+// `push_eta` for an `alpha` given with the list of its nonzero indices (the list is sorted in place, so the entries are stored in increasing order as `push_eta` stores them;
+// it may hold zeros, which are not stored, and must not name an index twice). Returns 0, or 3 when the eta file is full.
+pub fn push_eta_h[&a, &b, &c, &d](fi: &!a [int], ff: &!b [float], r: int, alpha: &c [float], idx: &!d [int], cnt: int) -> [] int {
+    sort_idx(fi, idx, cnt);
+    let n = fi[4];
+    if n >= fi[2] {
+        return r_eta_full();
+    }
+    var at = fi[5];
+    if at + cnt > fi[3] {
+        return r_eta_full();
+    }
+    var t = 0;
+    while t < cnt {
+        let j = idx[t];
+        if j != r && mag(alpha[j]) > 1e-14 {
+            fi[fi[37] + at] = j;
+            ff[fi[47] + at] = alpha[j];
+            at = at + 1;
+        }
+        t = t + 1;
+    }
+    fi[fi[36] + n] = r;
+    ff[fi[48] + n] = alpha[r];
+    fi[fi[35] + n + 1] = at;
+    fi[4] = n + 1;
+    fi[5] = at;
+    return 0;
 }

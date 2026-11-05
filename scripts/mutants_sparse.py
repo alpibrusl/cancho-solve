@@ -33,6 +33,26 @@ MUTANTS = [
     ("if cmin == 0 {\n                return r_singular();", "if cmin == 0 {\n                return r_ok();", "an empty column is not reported as singular"),
     ("fn tiny() -> [] float {\n    return 1e-11;", "fn tiny() -> [] float {\n    return 0.5;", "a pivot below 0.5 counts as zero"),
     ("let cost = (fi[o_rl + ii] - 1) * (cmin - 1);", "let cost = 0 - (fi[o_rl + ii] - 1) * (cmin - 1);", "Markowitz picks the largest count product (more fill)"),
+    # the hypersparse solves (design.md 21.2)
+    ("x[i] = x[i] - ff[o_lv + e] * tv;", "x[i] = x[i] + ff[o_lv + e] * tv;", "FTRAN_H applies L with the wrong sign"),
+    ("idx[nl] = i;\n                    nl = nl + 1;\n                    hn = hpush(fi, o_hp, hn, fi[o_rk + i]);", "hn = hpush(fi, o_hp, hn, fi[o_rk + i]);", "FTRAN_H does not list the rows L makes nonzero"),
+    ("hn = hpush(fi, o_hp, hn, m - 1 - r);", "hn = hn + 0;", "FTRAN_H does not visit the pivots U makes nonzero"),
+    ("ff[o_w3 + r] = ff[o_w3 + r] - ff[o_ucv + e] * xk;", "ff[o_w3 + r] = ff[o_w3 + r] + ff[o_ucv + e] * xk;", "FTRAN_H applies U with the wrong sign"),
+    ("let tt = x[r] / ff[o_ea + n];", "let tt = x[r];", "an eta does not divide by its pivot (FTRAN_H)"),
+    ("fi[o_hm + i] = 1;\n                        idx[nl] = i;\n                        nl = nl + 1;\n                    }\n                    e = e + 1;", "fi[o_hm + i] = 1;\n                    }\n                    e = e + 1;", "FTRAN_H does not list what an eta makes nonzero"),
+    ("let nv = s / ff[o_ea + n];", "let nv = s;", "an eta does not divide by its pivot (BTRAN_H)"),
+    ("if nv != 0.0 && fi[o_hm + r] == 0 {", "if false {", "BTRAN_H does not list a position an eta makes nonzero"),
+    ("ff[o_w3 + c2] = ff[o_w3 + c2] - ff[o_uv + e] * z;", "ff[o_w3 + c2] = ff[o_w3 + c2] + ff[o_uv + e] * z;", "BTRAN_H applies U transposed with the wrong sign"),
+    ("y[row] = y[row] - sum;", "y[row] = y[row] + sum;", "BTRAN_H applies L transposed with the wrong sign"),
+    ("sum = sum + ff[o_lv + e] * y[fi[o_lr + e]];\n            e = e + 1;\n        }\n        y[row] = y[row] - sum;", "sum = sum + ff[o_lv + e] * y[fi[o_lr + e]] + 1e-13;\n            e = e + 1;\n        }\n        y[row] = y[row] - sum;", "BTRAN_H differs from BTRAN in the last bits"),
+    ("if y[row] != 0.0 {\n            e = fi[o_lrs + row];", "if false {\n            e = fi[o_lrs + row];", "BTRAN_H does not push the pivots a nonzero row enters"),
+    ("idx[t] = fi[o_hp];\n        hn = hpop(fi, o_hp, hn);", "idx[t] = t;\n        hn = hpop(fi, o_hp, hn);", "the sort of an eta's list is not a sort"),
+    ("if j != r && mag(alpha[j]) > 1e-14 {\n            fi[fi[37] + at] = j;\n            ff[fi[47] + at] = alpha[j];\n            at = at + 1;\n        }\n        t = t + 1;", "if j != r {\n            fi[fi[37] + at] = j;\n            ff[fi[47] + at] = alpha[j] + 1e-3;\n            at = at + 1;\n        }\n        t = t + 1;", "the list form of an eta stores wrong values"),
+    ("fi[o_lrk + at] = k;", "fi[o_lrk + at] = m - 1 - k;", "L by rows names the wrong pivot"),
+    ("hn = hpush(fi, o_hp, hn, m - 1 - fi[o_lrk + e]);", "hn = hpush(fi, o_hp, hn, fi[o_lrk + e]);", "BTRAN_H visits the pivots of L transposed in the wrong order"),
+    ("idx[nl] = row2;\n                    nl = nl + 1;", "idx[nl] = row2;", "BTRAN_H does not list the rows L transposed makes nonzero"),
+    ("if ch + 1 < sz && fi[base + ch + 1] < fi[base + ch] {", "if false {", "the heap sifts down to the left child only"),
+    ("fi[o_hm + idx[t]] = 0;\n        t = t + 1;\n    }\n    return nl;\n}\n\n// BTRAN for a sparse", "fi[o_hm + idx[t]] = 1;\n        t = t + 1;\n    }\n    return nl;\n}\n\n// BTRAN for a sparse", "FTRAN_H leaves its marks set"),
 ]
 
 killed = survived = invalid = 0

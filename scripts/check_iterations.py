@@ -24,15 +24,16 @@ EXACT = [
     ("assignment 30x30, seed 1", lpgen.assignment(1, 30), 63),
     ("transportation 20x40, seed 9", lpgen.transportation(9, 20, 40), 59),
 ]
-# The sparse solver also reports its refactorisations: the first, one for each 64 iterations, and the one that confirms the optimum (design.md 18.3.2). Exact, because the
+# The sparse solver also reports its refactorisations: the first, one for each 256 iterations (64 until design.md 21.2 raised the interval; the counts below were re-measured
+# then, deliberately, and the iteration counts did not move), and the one that confirms the optimum (design.md 18.3.2). Exact, because the
 # interval, the refactorisation before "optimal" and the eta file's capacity are each a place where a change leaves every answer right and only moves this number
 # (found by the mutants "optimal is declared without a refactorisation", "no refactorisation at the interval", "a refactorisation at every iteration").
-REFACTORS = {"random dense LP 200x400": 7, "random dense LP 100x200": 4, "multi-knapsack 1000 items, 50 rows": 4, "assignment 100x100": 5,
+REFACTORS = {"random dense LP 200x400": 3, "random dense LP 100x200": 2, "multi-knapsack 1000 items, 50 rows": 2, "assignment 100x100": 2,
              "assignment 30x30, seed 1": 2, "transportation 20x40, seed 9": 2}
 bad = 0
 def check_refactors(name, result):
     global bad
-    if METHOD == "sparse" and name in REFACTORS:
+    if METHOD in ("sparse", "sparse-raw") and name in REFACTORS:
         got = result["stats"].get("refactorisations")
         if got != REFACTORS[name]:
             bad += 1
@@ -47,7 +48,7 @@ for name, text, want in EXACT:
         print(f"ok   {name}: {it} iterations (exact)")
     check_refactors(name, json.loads(p.stdout))
 for name, text, bound_dense, bound_sparse in CASES:
-    bound = bound_sparse if METHOD == "sparse" else bound_dense
+    bound = bound_sparse if METHOD in ("sparse", "sparse-raw") else bound_dense
     p, _ = run_solve(SOLVE, ["run", "--relax"], text)
     r = json.loads(p.stdout)
     it = r["stats"]["iterations"]
@@ -57,5 +58,17 @@ for name, text, bound_dense, bound_sparse in CASES:
     else:
         print(f"ok   {name}: {it} iterations (bound {bound})")
     check_refactors(name, r)
+# the refactorisation at the interval itself: 200x400 needs 353 iterations; stopped by the limit at 256 (the interval) the solver has made its first factorisation and the one
+# that the 256th iteration triggers, so 2; without the trigger the eta file is only full one iteration later (it holds interval + 1) and the count is 1. Found by the mutant "no
+# refactorisation at the interval", which the counts above cannot tell from a file that fills (353 iterations give the same 3 either way).
+if METHOD in ("sparse", "sparse-raw"):
+    p, _ = run_solve(SOLVE, ["run", "--relax", "--iteration-limit", "256"], CASES[0][1])
+    r = json.loads(p.stdout)
+    got = (r["stats"]["iterations"], r["stats"].get("refactorisations"))
+    if got != (256, 2):
+        bad += 1
+        print(f"FAIL {CASES[0][0]} stopped at 256 iterations: (iterations, refactorisations) = {got}, wanted (256, 2)")
+    else:
+        print(f"ok   {CASES[0][0]}: stopped at 256 iterations, 2 refactorisations (the interval)")
 print("iteration gate:", "FAILED" if bad else "passed", f"({len(CASES) + len(EXACT)} cases, {bad} failures)")
 sys.exit(1 if bad else 0)

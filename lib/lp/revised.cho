@@ -9,6 +9,7 @@ module solve.revised;
 // Nothing here writes to the checker's slices.
 
 import solve.layout as l;
+import solve.presolve as pp;
 import solve.sparse as sp;
 
 pub fn s_optimal() -> [] int {
@@ -45,16 +46,33 @@ fn mag(x: float) -> [] float {
 
 // The refactorisation interval (design.md 18.4).
 fn interval() -> [] int {
+    return 256;
+}
+
+// The interval of the warm-started engine of the branch and bound search (`ws_*`): 64 as before design.md 21.2, so that the search takes the same path (its node and cut gates hold
+// exact counts); raising it to `interval()` speeds the root LP of a large model and is a deliberate change of those counts, left to the search's owner.
+fn ws_interval() -> [] int {
     return 64;
+}
+
+// The room for the entries of the etas of `solve`: what `interval()` full-length etas would take, but at most 8 (nnz + m) + 65536, a file that fills being refactorised early
+// (design.md 21.2). The search's engine keeps the room it always had, `ws_interval() * m + 16`.
+fn eta_room(m: int, nnz: int) -> [] int {
+    let full = interval() * m + 16;
+    let cap = 8 * (nnz + m) + 65536;
+    if full < cap {
+        return full;
+    }
+    return cap;
 }
 
 // Sizes of the two work slices: ints, floats.
 pub fn wi_len(m: int, n: int, nnz: int) -> [] int {
-    return 64 + (n + 1) + nnz + (m + 1) + nnz + m + 3 * (n + m) + 2 * n + (m + 1) + (nnz + m) + 8;
+    return 64 + (n + 1) + nnz + (m + 1) + nnz + m + 3 * (n + m) + 2 * n + (m + 1) + (nnz + m) + 8 + 7 * m;
 }
 
 pub fn wf_len(m: int, n: int, nnz: int) -> [] int {
-    return 64 + n + 4 * (n + m) + m + n + 4 * m + (n + m) + 2 * nnz + (nnz + m) + 8;
+    return 64 + n + 4 * (n + m) + m + n + 4 * m + (n + m) + 2 * nnz + (nnz + m) + 8 + m;
 }
 
 // Header of `wi`: 0 m, 1 n, 2 big, 3 nnz, 4 cstart, 5 crow, 6 rstart, 7 rcol, 8 basis, 9 pos, 10 at, 11 cand, 12 touch, 13 tmark, 14 bstart, 15 bind,
@@ -120,6 +138,28 @@ fn layout_offsets[&a](wi: &!a [int], m: int, n: int, nnz: int) -> [] int {
     q = q + nnz;
     wi[30] = q;
     wi[31] = 0;
+    // the lists of the iteration (design.md 21.2): 33 rho, 34 alpha, 35 tau, 36 flip vector, 37 infeasible rows, 38 position of a row in that list, 40 marks of the flip vector;
+    // 39 is the length of the list of infeasible rows. They follow the integer arrays above (the last of which, `bind`, takes nnz + m).
+    o = o + nnz + m;
+    wi[33] = o;
+    o = o + m;
+    wi[34] = o;
+    o = o + m;
+    wi[35] = o;
+    o = o + m;
+    wi[36] = o;
+    o = o + m;
+    wi[37] = o;
+    o = o + m;
+    wi[38] = o;
+    o = o + m;
+    wi[40] = o;
+    o = o + m;
+    wi[39] = 0;
+    // the signed infeasibility of each basic position (floats, after the float arrays above)
+    wi[41] = q + nnz + m;
+    // 42: the refactorisation interval of this state
+    wi[42] = interval();
     return 0;
 }
 
@@ -222,6 +262,126 @@ fn setup[&a, &b, &c, &d](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d 
     var t = 0;
     while t < ints[l.h_obj_nnz()] {
         wf[o_c + ints[l.obj_col(t)]] = sign * fl[l.obj_coef(t)];
+        t = t + 1;
+    }
+    // the slack basis; structural variables at the bound their cost prefers
+    j = 0;
+    while j < n {
+        wi[o_ps + j] = 0 - 1;
+        wf[o_d + j] = wf[o_c + j];
+        if wf[o_c + j] >= 0.0 {
+            wi[o_at + j] = 0;
+            wf[o_z + j] = wf[o_lo + j];
+        } else {
+            wi[o_at + j] = 1;
+            wf[o_z + j] = wf[o_hi + j];
+        }
+        j = j + 1;
+    }
+    i = 0;
+    while i < m {
+        wi[o_bs + i] = n + i;
+        wi[o_ps + n + i] = i;
+        wf[o_wt + i] = 1.0;
+        var act = 0.0;
+        var u = wi[o_rs + i];
+        while u < wi[o_rs + i + 1] {
+            act = act + wf[o_rv + u] * wf[o_z + wi[o_rc + u]];
+            u = u + 1;
+        }
+        wf[o_z + n + i] = act;
+        i = i + 1;
+    }
+    return big;
+}
+
+// The same from a raw problem (presolve.cho): the rows, bounds and costs in flat arrays, as `read_raw` or `reduce` leave them. It is `setup` with another source, and nothing else.
+fn setup_raw[&a, &b, &c, &d](ri: &a [int], rf: &b [float], wi: &!c [int], wf: &!d [float]) -> [] int {
+    let n = ri[1];
+    let m = ri[0];
+    let nnz = ri[2];
+    let q_rs = ri[3];
+    let q_rc = ri[4];
+    let q_rv = ri[11];
+    let q_clo = ri[13];
+    let q_chi = ri[14];
+    let q_cost = ri[15];
+    let q_rlo = ri[16];
+    let q_rhi = ri[17];
+    layout_offsets(wi, m, n, nnz);
+    let big = n + m;
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_rs = wi[6];
+    let o_rc = wi[7];
+    let o_bs = wi[8];
+    let o_ps = wi[9];
+    let o_at = wi[10];
+    let o_c = wi[16];
+    let o_d = wi[17];
+    let o_z = wi[18];
+    let o_lo = wi[19];
+    let o_hi = wi[20];
+    let o_wt = wi[21];
+    let o_cv = wi[28];
+    let o_rv = wi[29];
+    // bounds
+    var k = 0;
+    while k < n {
+        wf[o_lo + k] = rf[q_clo + k];
+        wf[o_hi + k] = rf[q_chi + k];
+        k = k + 1;
+    }
+    // the rows, and the count of each column
+    var j = 0;
+    while j <= n {
+        wi[o_cs + j] = 0;
+        j = j + 1;
+    }
+    var i = 0;
+    while i < m {
+        wf[o_lo + n + i] = rf[q_rlo + i];
+        wf[o_hi + n + i] = rf[q_rhi + i];
+        wi[o_rs + i] = ri[q_rs + i];
+        var t = ri[q_rs + i];
+        while t < ri[q_rs + i + 1] {
+            wi[o_rc + t] = ri[q_rc + t];
+            wf[o_rv + t] = rf[q_rv + t];
+            wi[o_cs + ri[q_rc + t] + 1] = wi[o_cs + ri[q_rc + t] + 1] + 1;
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    wi[o_rs + m] = nnz;
+    j = 0;
+    while j < n {
+        wi[o_cs + j + 1] = wi[o_cs + j + 1] + wi[o_cs + j];
+        wi[wi[13] + j] = 0;
+        j = j + 1;
+    }
+    // the column form: rows in increasing order within a column
+    i = 0;
+    while i < m {
+        var t = wi[o_rs + i];
+        while t < wi[o_rs + i + 1] {
+            let cj = wi[o_rc + t];
+            let at = wi[o_cs + cj] + wi[wi[13] + cj];
+            wi[o_cr + at] = i;
+            wf[o_cv + at] = wf[o_rv + t];
+            wi[wi[13] + cj] = wi[wi[13] + cj] + 1;
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    j = 0;
+    while j < n {
+        wi[wi[13] + j] = 0;
+        j = j + 1;
+    }
+    // costs of the minimised objective
+    var t = 0;
+    while t < n {
+        wf[o_c + t] = rf[q_cost + t];
         t = t + 1;
     }
     // the slack basis; structural variables at the bound their cost prefers
@@ -390,6 +550,7 @@ fn recompute[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &c [int], ff: &
     while p < m {
         wf[o_z + wi[o_bs + p]] = -wf[o_sv + p];
         wf[o_sv + p] = 0.0;
+        wf[o_rho + p] = 0.0;
         p = p + 1;
     }
     return 0;
@@ -410,11 +571,159 @@ fn refactor[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &
     return recompute(wi, wf, fi, ff);
 }
 
-// The loop. Returns a result code; `stats[0]` is the iteration count.
+// The signed infeasibility of the basic variable at position i: positive when below its lower bound (by that much), negative when above its upper bound, 0 when feasible.
+fn row_viol[&a, &b](wi: &a [int], wf: &b [float], i: int) -> [] float {
+    let bv = wi[wi[8] + i];
+    let v = wf[wi[18] + bv];
+    let lb = wf[wi[19] + bv];
+    let ub = wf[wi[20] + bv];
+    if v < lb - 1e-9 * (1.0 + mag(lb)) {
+        return lb - v;
+    }
+    if v > ub + 1e-9 * (1.0 + mag(ub)) {
+        return ub - v;
+    }
+    return 0.0;
+}
+
+// The infeasible rows are kept in a binary max-heap by price (`viol^2 / weight`, ties to the smaller position), `wi[37]` the heap, `wi[38]` the place of each position in it (-1:
+// not in it), `wi[39]` its size, `wf[wi[41] + i]` the price of position i (0 when it is feasible). A price changes only when the basic value or the weight of a position changes,
+// that is, for the nonzeros of alpha, of the flip vector, and the pivot row: `ih_update` is called for those, so the best row is the top of the heap (design.md 21.2).
+fn ih_before[&a](wf: &a [float], o_vs: int, x: int, y: int) -> [] bool {
+    let sx = wf[o_vs + x];
+    let sy = wf[o_vs + y];
+    return sx > sy || sx == sy && x < y;
+}
+
+fn ih_put[&a](wi: &!a [int], p: int, x: int) -> [] int {
+    wi[wi[37] + p] = x;
+    wi[wi[38] + x] = p;
+    return 0;
+}
+
+fn ih_up[&a, &b](wi: &!a [int], wf: &b [float], p0: int) -> [] int {
+    let o_vs = wi[41];
+    let o_li = wi[37];
+    let x = wi[o_li + p0];
+    var p = p0;
+    var going = true;
+    while going && p > 0 {
+        let par = (p - 1) / 2;
+        let y = wi[o_li + par];
+        if ih_before(wf, o_vs, x, y) {
+            ih_put(wi, p, y);
+            p = par;
+        } else {
+            going = false;
+        }
+    }
+    ih_put(wi, p, x);
+    return 0;
+}
+
+fn ih_down[&a, &b](wi: &!a [int], wf: &b [float], p0: int) -> [] int {
+    let o_vs = wi[41];
+    let o_li = wi[37];
+    let sz = wi[39];
+    let x = wi[o_li + p0];
+    var p = p0;
+    var going = true;
+    while going {
+        let l = 2 * p + 1;
+        if l >= sz {
+            going = false;
+        } else {
+            var c = l;
+            if l + 1 < sz && ih_before(wf, o_vs, wi[o_li + l + 1], wi[o_li + l]) {
+                c = l + 1;
+            }
+            let y = wi[o_li + c];
+            if ih_before(wf, o_vs, y, x) {
+                ih_put(wi, p, y);
+                p = c;
+            } else {
+                going = false;
+            }
+        }
+    }
+    ih_put(wi, p, x);
+    return 0;
+}
+
+// Recomputes the price of position i and restores the heap.
+fn ih_update[&a, &b](wi: &!a [int], wf: &!b [float], i: int) -> [] int {
+    let sg = row_viol(wi, wf, i);
+    var sc = 0.0;
+    if sg != 0.0 {
+        sc = sg * sg / wf[wi[21] + i];
+    }
+    wf[wi[41] + i] = sc;
+    let p = wi[wi[38] + i];
+    if sc == 0.0 {
+        if p >= 0 {
+            // out of the heap: the last item takes its place
+            let last = wi[wi[37] + wi[39] - 1];
+            wi[39] = wi[39] - 1;
+            wi[wi[38] + i] = 0 - 1;
+            if p < wi[39] {
+                ih_put(wi, p, last);
+                ih_up(wi, wf, p);
+                ih_down(wi, wf, wi[wi[38] + last]);
+            }
+        }
+    } else if p < 0 {
+        wi[39] = wi[39] + 1;
+        ih_put(wi, wi[39] - 1, i);
+        ih_up(wi, wf, wi[39] - 1);
+    } else {
+        ih_up(wi, wf, p);
+        ih_down(wi, wf, wi[wi[38] + i]);
+    }
+    return 0;
+}
+
+// The heap from scratch (one pass to price every position, then a bottom-up heapify).
+fn rebuild_infeasible[&a, &b](wi: &!a [int], wf: &!b [float]) -> [] int {
+    let m = wi[0];
+    var cnt = 0;
+    var i = 0;
+    while i < m {
+        wi[wi[38] + i] = 0 - 1;
+        let sg = row_viol(wi, wf, i);
+        var sc = 0.0;
+        if sg != 0.0 {
+            sc = sg * sg / wf[wi[21] + i];
+        }
+        wf[wi[41] + i] = sc;
+        if sc != 0.0 {
+            ih_put(wi, cnt, i);
+            cnt = cnt + 1;
+        }
+        i = i + 1;
+    }
+    wi[39] = cnt;
+    var p = cnt / 2;
+    while p > 0 {
+        p = p - 1;
+        ih_down(wi, wf, p);
+    }
+    return 0;
+}
+
+// `refactor`, and the list of infeasible rows again when it succeeded.
+fn refactor_i[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float]) -> [] int {
+    let code = refactor(wi, wf, fi, ff);
+    if code == 0 {
+        rebuild_infeasible(wi, wf);
+    }
+    return code;
+}
+
+// The loop. Returns a result code; `stats[0]` is the iteration count. Every vector of an iteration (`rho`, `alpha`, `tau`, the flip vector) is a dense work vector with the list of
+// its nonzero indices, and the pricing runs over the list of infeasible rows, so an iteration costs what its vectors hold, not the number of rows (design.md 21.2).
 fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float], stats: &!e [int], limit: int) -> [] int {
     let m = wi[0];
     let n = wi[1];
-    let big = n + m;
     let o_cs = wi[4];
     let o_cr = wi[5];
     let o_rs = wi[6];
@@ -439,43 +748,45 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
     let o_ra = wi[27];
     let o_cv = wi[28];
     let o_rv = wi[29];
+    let o_rl = wi[33];
+    let o_il = wi[34];
+    let o_tl = wi[35];
+    let o_sl = wi[36];
+    let o_li = wi[37];
+    let o_sm = wi[40];
+    let o_vs = wi[41];
+    // the work vectors are zero between iterations; a call that ended in the middle of one (or a recomputation) may have left them dirty
+    var i = 0;
+    while i < m {
+        wf[o_rho + i] = 0.0;
+        wf[o_al + i] = 0.0;
+        wf[o_tau + i] = 0.0;
+        wf[o_sv + i] = 0.0;
+        wi[o_sm + i] = 0;
+        i = i + 1;
+    }
+    rebuild_infeasible(wi, wf);
     var iter = 0;
     while true {
-        // the basic variable of largest steepest-edge price
+        // the basic variable of largest steepest-edge price: the top of the heap of infeasible rows
         var r = 0 - 1;
         var worst = 0.0;
-        var score = 0.0;
         var up = false;
-        var i = 0;
-        while i < m {
-            let bv = wi[o_bs + i];
-            let v = wf[o_z + bv];
-            let lb = wf[o_lo + bv];
-            let ub = wf[o_hi + bv];
-            var viol = 0.0;
-            var below = false;
-            if v < lb - 1e-9 * (1.0 + mag(lb)) {
-                viol = lb - v;
-                below = true;
-            } else if v > ub + 1e-9 * (1.0 + mag(ub)) {
-                viol = v - ub;
+        var t = 0;
+        if wi[39] > 0 {
+            let top = wi[o_li];
+            if wf[o_vs + top] > 0.0 {
+                let sg = row_viol(wi, wf, top);
+                r = top;
+                worst = mag(sg);
+                up = sg > 0.0;
             }
-            if viol > 0.0 {
-                let sc = viol * viol / wf[o_wt + i];
-                if sc > score {
-                    score = sc;
-                    worst = viol;
-                    r = i;
-                    up = below;
-                }
-            }
-            i = i + 1;
         }
         stats[0] = iter;
         if r < 0 {
             // optimal only straight after a refactorisation
             if fi[4] > 0 {
-                let code = refactor(wi, wf, fi, ff);
+                let code = refactor_i(wi, wf, fi, ff);
                 if code != 0 {
                     return code;
                 }
@@ -486,53 +797,53 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             return s_limit();
         } else {
             // rho = e_r B^-1, and its exact squared length as the weight of the row
-            i = 0;
-            while i < m {
-                wf[o_rho + i] = 0.0;
-                i = i + 1;
-            }
             wf[o_rho + r] = 1.0;
-            sp.btran(fi, ff, wf[o_rho..o_rho + m]);
+            wi[o_rl] = r;
+            let nr = sp.btran_h(fi, ff, wf[o_rho..o_rho + m], wi[o_rl..o_rl + m], 1);
+            // in increasing order, so that every sum below is taken in the order of the dense passes
+            sp.sort_idx(fi, wi[o_rl..o_rl + m], nr);
             var wr = 0.0;
-            i = 0;
-            while i < m {
-                wr = wr + wf[o_rho + i] * wf[o_rho + i];
-                i = i + 1;
+            t = 0;
+            while t < nr {
+                let ri = wf[o_rho + wi[o_rl + t]];
+                wr = wr + ri * ri;
+                t = t + 1;
             }
             wf[o_wt + r] = wr;
             // the pivot row: structural columns through the rows of A for the nonzeros of rho
             var nt = 0;
-            i = 0;
-            while i < m {
-                let ri = wf[o_rho + i];
+            t = 0;
+            while t < nr {
+                let i2 = wi[o_rl + t];
+                let ri = wf[o_rho + i2];
                 if ri != 0.0 {
-                    var t = wi[o_rs + i];
-                    while t < wi[o_rs + i + 1] {
-                        let cj = wi[o_rc + t];
+                    var u = wi[o_rs + i2];
+                    while u < wi[o_rs + i2 + 1] {
+                        let cj = wi[o_rc + u];
                         if wi[o_tm + cj] == 0 {
                             wi[o_tm + cj] = 1;
                             wi[o_tc + nt] = cj;
                             nt = nt + 1;
                             wf[o_ar + cj] = 0.0;
                         }
-                        wf[o_ar + cj] = wf[o_ar + cj] + ri * wf[o_rv + t];
-                        t = t + 1;
+                        wf[o_ar + cj] = wf[o_ar + cj] + ri * wf[o_rv + u];
+                        u = u + 1;
                     }
                 }
-                i = i + 1;
+                t = t + 1;
             }
-            // the candidates, with their dual ratios
+            // the candidates, with their dual ratios: the touched structural columns, then the logicals of the nonzero rows of rho
             var nc = 0;
             var s = 0;
-            while s < nt + m {
+            while s < nt + nr {
                 var j = 0;
                 var av = 0.0;
                 if s < nt {
                     j = wi[o_tc + s];
                     av = wf[o_ar + j];
                 } else {
-                    j = n + s - nt;
-                    av = -wf[o_rho + s - nt];
+                    j = n + wi[o_rl + s - nt];
+                    av = -wf[o_rho + wi[o_rl + s - nt]];
                 }
                 if wi[o_ps + j] < 0 && wf[o_hi + j] - wf[o_lo + j] > 1e-12 && mag(av) > 1e-9 {
                     let atb = wi[o_at + j];
@@ -555,6 +866,7 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             var delta = worst;
             var left = nc;
             var flips = 0;
+            var ns = 0;
             while q < 0 && left > 0 {
                 var bi = 0;
                 var k2 = 1;
@@ -604,13 +916,25 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                         now = 0;
                     }
                     if cj < n {
-                        var t = wi[o_cs + cj];
-                        while t < wi[o_cs + cj + 1] {
-                            wf[o_sv + wi[o_cr + t]] = wf[o_sv + wi[o_cr + t]] + wf[o_cv + t] * dx;
-                            t = t + 1;
+                        var u = wi[o_cs + cj];
+                        while u < wi[o_cs + cj + 1] {
+                            let rw = wi[o_cr + u];
+                            wf[o_sv + rw] = wf[o_sv + rw] + wf[o_cv + u] * dx;
+                            if wi[o_sm + rw] == 0 {
+                                wi[o_sm + rw] = 1;
+                                wi[o_sl + ns] = rw;
+                                ns = ns + 1;
+                            }
+                            u = u + 1;
                         }
                     } else {
-                        wf[o_sv + cj - n] = wf[o_sv + cj - n] - dx;
+                        let rw = cj - n;
+                        wf[o_sv + rw] = wf[o_sv + rw] - dx;
+                        if wi[o_sm + rw] == 0 {
+                            wi[o_sm + rw] = 1;
+                            wi[o_sl + ns] = rw;
+                            ns = ns + 1;
+                        }
                     }
                     flips = flips + 1;
                     wf[o_z + cj] = nbound;
@@ -630,32 +954,52 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             var result = 0 - 1;
             if q < 0 {
                 result = s_infeasible();
+                // leave the work vectors clean
+                t = 0;
+                while t < ns {
+                    wf[o_sv + wi[o_sl + t]] = 0.0;
+                    wi[o_sm + wi[o_sl + t]] = 0;
+                    t = t + 1;
+                }
+                t = 0;
+                while t < nr {
+                    wf[o_rho + wi[o_rl + t]] = 0.0;
+                    t = t + 1;
+                }
             } else {
+                var nf = 0;
                 if flips > 0 {
-                    sp.ftran(fi, ff, wf[o_sv..o_sv + m]);
-                    i = 0;
-                    while i < m {
-                        wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_sv + i];
-                        wf[o_sv + i] = 0.0;
-                        i = i + 1;
+                    // the marks name the rows of the right-hand side; clear them before the solve rewrites the list
+                    t = 0;
+                    while t < ns {
+                        wi[o_sm + wi[o_sl + t]] = 0;
+                        t = t + 1;
+                    }
+                    nf = sp.ftran_h(fi, ff, wf[o_sv..o_sv + m], wi[o_sl..o_sl + m], ns);
+                    t = 0;
+                    while t < nf {
+                        let fp = wi[o_sl + t];
+                        wf[o_z + wi[o_bs + fp]] = wf[o_z + wi[o_bs + fp]] - wf[o_sv + fp];
+                        wf[o_sv + fp] = 0.0;
+                        t = t + 1;
                     }
                 }
                 // alpha = B^-1 M_q
-                i = 0;
-                while i < m {
-                    wf[o_al + i] = 0.0;
-                    i = i + 1;
-                }
+                var na = 0;
                 if q < n {
-                    var t = wi[o_cs + q];
-                    while t < wi[o_cs + q + 1] {
-                        wf[o_al + wi[o_cr + t]] = wf[o_cv + t];
-                        t = t + 1;
+                    var u = wi[o_cs + q];
+                    while u < wi[o_cs + q + 1] {
+                        wf[o_al + wi[o_cr + u]] = wf[o_cv + u];
+                        wi[o_il + na] = wi[o_cr + u];
+                        na = na + 1;
+                        u = u + 1;
                     }
                 } else {
                     wf[o_al + q - n] = -1.0;
+                    wi[o_il] = q - n;
+                    na = 1;
                 }
-                sp.ftran(fi, ff, wf[o_al..o_al + m]);
+                na = sp.ftran_h(fi, ff, wf[o_al..o_al + m], wi[o_il..o_il + m], na);
                 let piv = wf[o_al + r];
                 if fi[4] > 0 && (mag(piv - arq) > 1e-7 * (1.0 + mag(arq)) || mag(piv) < 1e-9) {
                     restart = true;
@@ -667,49 +1011,54 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                         target = wf[o_lo + leaving];
                     }
                     let dq = -(target - wf[o_z + leaving]) / piv;
-                    i = 0;
-                    while i < m {
-                        if i != r {
-                            wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_al + i] * dq;
+                    t = 0;
+                    while t < na {
+                        let ap = wi[o_il + t];
+                        if ap != r {
+                            wf[o_z + wi[o_bs + ap]] = wf[o_z + wi[o_bs + ap]] - wf[o_al + ap] * dq;
                         }
-                        i = i + 1;
+                        t = t + 1;
                     }
                     wf[o_z + q] = wf[o_z + q] + dq;
                     wf[o_z + leaving] = target;
                     // tau = B^-1 rho^T, then the steepest-edge weights
-                    i = 0;
-                    while i < m {
-                        wf[o_tau + i] = wf[o_rho + i];
-                        i = i + 1;
+                    t = 0;
+                    while t < nr {
+                        let rp = wi[o_rl + t];
+                        wf[o_tau + rp] = wf[o_rho + rp];
+                        wi[o_tl + t] = rp;
+                        t = t + 1;
                     }
-                    sp.ftran(fi, ff, wf[o_tau..o_tau + m]);
-                    i = 0;
-                    while i < m {
-                        if i != r && wf[o_al + i] != 0.0 {
-                            let kap = wf[o_al + i] / piv;
-                            var nw = wf[o_wt + i] - 2.0 * kap * wf[o_tau + i] + kap * kap * wr;
+                    let ntau = sp.ftran_h(fi, ff, wf[o_tau..o_tau + m], wi[o_tl..o_tl + m], nr);
+                    t = 0;
+                    while t < na {
+                        let ap = wi[o_il + t];
+                        if ap != r && wf[o_al + ap] != 0.0 {
+                            let kap = wf[o_al + ap] / piv;
+                            var nw = wf[o_wt + ap] - 2.0 * kap * wf[o_tau + ap] + kap * kap * wr;
                             if nw < 1e-4 {
                                 nw = 1e-4;
                             }
-                            wf[o_wt + i] = nw;
+                            wf[o_wt + ap] = nw;
                         }
-                        i = i + 1;
+                        t = t + 1;
                     }
                     wf[o_wt + r] = wr / (piv * piv);
                     // reduced costs
                     let fd = wf[o_dd + q] / piv;
                     if fd != 0.0 {
                         s = 0;
-                        while s < nt + m {
+                        while s < nt + nr {
                             if s < nt {
                                 let j = wi[o_tc + s];
                                 if wi[o_ps + j] < 0 {
                                     wf[o_dd + j] = wf[o_dd + j] - fd * wf[o_ar + j];
                                 }
                             } else {
-                                let j = n + s - nt;
-                                if wi[o_ps + j] < 0 && wf[o_rho + s - nt] != 0.0 {
-                                    wf[o_dd + j] = wf[o_dd + j] + fd * wf[o_rho + s - nt];
+                                let rp = wi[o_rl + s - nt];
+                                let j = n + rp;
+                                if wi[o_ps + j] < 0 && wf[o_rho + rp] != 0.0 {
+                                    wf[o_dd + j] = wf[o_dd + j] + fd * wf[o_rho + rp];
                                 }
                             }
                             s = s + 1;
@@ -727,13 +1076,37 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                     wi[o_bs + r] = q;
                     wi[o_ps + q] = r;
                     iter = iter + 1;
-                    let full = sp.push_eta(fi, ff, r, wf[o_al..o_al + m]);
-                    if full != 0 || fi[4] >= interval() {
-                        result = refactor(wi, wf, fi, ff);
-                        if result == 0 {
-                            result = 0 - 1;
-                        }
+                    // the prices of the positions whose value or weight moved: the nonzeros of alpha (the pivot position among them, its entry being the pivot) and of the flip vector
+                    t = 0;
+                    while t < na {
+                        ih_update(wi, wf, wi[o_il + t]);
+                        t = t + 1;
                     }
+                    t = 0;
+                    while t < nf {
+                        ih_update(wi, wf, wi[o_sl + t]);
+                        t = t + 1;
+                    }
+                    let full = sp.push_eta_h(fi, ff, r, wf[o_al..o_al + m], wi[o_il..o_il + m], na);
+                    // clean the work vectors before anything recomputes
+                    t = 0;
+                    while t < ntau {
+                        wf[o_tau + wi[o_tl + t]] = 0.0;
+                        t = t + 1;
+                    }
+                    if full != 0 || fi[4] >= wi[42] {
+                        result = 0 - 2;
+                    }
+                }
+                t = 0;
+                while t < na {
+                    wf[o_al + wi[o_il + t]] = 0.0;
+                    t = t + 1;
+                }
+                t = 0;
+                while t < nr {
+                    wf[o_rho + wi[o_rl + t]] = 0.0;
+                    t = t + 1;
                 }
             }
             // clear the pivot row
@@ -742,8 +1115,14 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                 wi[o_tm + wi[o_tc + s]] = 0;
                 s = s + 1;
             }
+            if result == 0 - 2 {
+                result = refactor_i(wi, wf, fi, ff);
+                if result == 0 {
+                    result = 0 - 1;
+                }
+            }
             if restart {
-                let code = refactor(wi, wf, fi, ff);
+                let code = refactor_i(wi, wf, fi, ff);
                 if code != 0 {
                     return code;
                 }
@@ -756,16 +1135,14 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
     return s_limit();
 }
 
-// Solves the LP of the checked model in `ints`/`fl` by the revised dual simplex. Same contract as simplex.solve (x, stats, limit < 0 means the default); `stats[3]` is the
-// number of refactorisations. Codes: 0 optimal, 1 infeasible, 2 limit, 3 too large, 4 numerical.
-pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
-    let n = ints[l.h_nvars()];
-    let m = ints[l.h_ncons()];
-    let nnz = ints[l.row_start(m)];
+// The revised dual simplex on a raw problem (presolve.cho): the pool of the factorisation starts at `3 (nnz + m) + 4096` and is quadrupled up to three times. `x` (n floats)
+// gets the values of the structural columns; `stats[0]` the iterations and `stats[3]` the refactorisations. Codes: 0 optimal, 1 infeasible, 2 limit, 3 too large, 4 numerical.
+fn solve_raw[&h, &a, &b, &c, &d](heap: &!h Heap, ri: &a [int], rf: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
+    let n = ri[1];
+    let m = ri[0];
+    let nnz = ri[2];
     let big = n + m;
     stats[0] = 0;
-    stats[1] = m;
-    stats[2] = n;
     stats[3] = 0;
     var cap = limit;
     if limit < 0 {
@@ -779,7 +1156,7 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
             return s_too_large();
         }
         let k = interval() + 1;
-        let e = interval() * m + 16;
+        let e = eta_room(m, nnz);
         let wi = box_slice(heap, wi_len(m, n, nnz), 0);
         let wf = box_slice(heap, wf_len(m, n, nnz), 0.0);
         let fi = box_slice(heap, sp.ints_len(m, pool, k, e), 0);
@@ -792,7 +1169,7 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
                         let wfv = contents(wfb);
                         let fiv = contents(fib);
                         let ffv = contents(ffb);
-                        setup(ints, fl, wiv, wfv);
+                        setup_raw(ri, rf, wiv, wfv);
                         sp.init(fiv, m, pool, k, e);
                         status = refactor(wiv, wfv, fiv, ffv);
                         if status == 0 {
@@ -818,6 +1195,107 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
     return status;
 }
 
+// Solves the LP of the checked model in `ints`/`fl` by the revised dual simplex, after the presolve of presolve.cho when `pre` (design.md 21.3). Same contract as simplex.solve (x, stats,
+// limit < 0 means the default); `stats[3]` is the number of refactorisations, `stats[4]` and `stats[5]` the rows and columns the presolve removed; `stats[1]` and `stats[2]` stay the
+// rows and columns of the model. Codes: 0 optimal, 1 infeasible, 2 limit, 3 too large, 4 numerical.
+fn solve_p[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int, pre: bool) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    let nnz = ints[l.row_start(m)];
+    stats[0] = 0;
+    stats[1] = m;
+    stats[2] = n;
+    stats[3] = 0;
+    stats[4] = 0;
+    stats[5] = 0;
+    var status = s_optimal();
+    let ri = box_slice(heap, pp.raw_ints_len(m, n, nnz), 0);
+    let rf = box_slice(heap, pp.raw_floats_len(m, n, nnz), 0.0);
+    borrow mut ri as &!rib in {
+        borrow mut rf as &!rfb in {
+            let riv = contents(rib);
+            let rfv = contents(rfb);
+            pp.read_raw(ints, fl, riv, rfv);
+            var infeasible = 0;
+            if pre {
+                infeasible = pp.presolve(riv, rfv);
+            } else {
+                riv[26] = m;
+                riv[27] = n;
+                riv[28] = nnz;
+                var j = 0;
+                while j < n {
+                    riv[riv[8] + j] = 1;
+                    j = j + 1;
+                }
+                j = 0;
+                while j < m {
+                    riv[riv[7] + j] = 1;
+                    j = j + 1;
+                }
+            }
+            if infeasible != 0 {
+                status = s_infeasible();
+            } else {
+                stats[4] = riv[24];
+                stats[5] = riv[25];
+                let m2 = riv[26];
+                let n2 = riv[27];
+                let nnz2 = riv[28];
+                let qi = box_slice(heap, pp.raw_ints_len(m2, n2, nnz2), 0);
+                let qf = box_slice(heap, pp.raw_floats_len(m2, n2, nnz2), 0.0);
+                let xq = box_slice(heap, n2 + 1, 0.0);
+                borrow mut qi as &!qib in {
+                    borrow mut qf as &!qfb in {
+                        borrow mut xq as &!xqb in {
+                            let qiv = contents(qib);
+                            let qfv = contents(qfb);
+                            let xqv = contents(xqb);
+                            pp.reduce(riv, rfv, qiv, qfv);
+                            if n2 == 0 {
+                                // nothing left to decide: the rows that remain must hold with no column in them
+                                var i = 0;
+                                while i < m2 {
+                                    if qfv[qiv[16] + i] > 1e-9 || qfv[qiv[17] + i] < -1e-9 {
+                                        status = s_infeasible();
+                                    }
+                                    i = i + 1;
+                                }
+                            } else {
+                                status = solve_raw(heap, qiv, qfv, xqv, stats, limit);
+                            }
+                            var j = 0;
+                            while j < n {
+                                if riv[riv[8] + j] == 1 {
+                                    x[j] = xqv[riv[riv[9] + j]];
+                                } else {
+                                    x[j] = rfv[riv[18] + j];
+                                }
+                                j = j + 1;
+                            }
+                        }
+                    }
+                }
+                unbox_slice(heap, xq);
+                unbox_slice(heap, qf);
+                unbox_slice(heap, qi);
+            }
+        }
+    }
+    unbox_slice(heap, rf);
+    unbox_slice(heap, ri);
+    return status;
+}
+
+pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
+    return solve_p(heap, ints, fl, x, stats, limit, true);
+}
+
+// The same without the presolve (`--method sparse-raw`).
+pub fn solve_unreduced[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
+    return solve_p(heap, ints, fl, x, stats, limit, false);
+}
+
 // ---- The warm start for the branch and bound search (docs/design.md 19.6). The state is `wi`, `wf`, `fi`, `ff` as in `solve`; nothing above is edited.
 // `wi[32]` is set when `wi`/`wf` were overwritten by a copy of another state: `fi`/`ff` then belong to another basis and `ws_refresh` refactorises.
 
@@ -831,11 +1309,11 @@ pub fn ws_too_large(m: int, nnz: int) -> [] bool {
 }
 
 pub fn ws_fi_len(m: int, nnz: int) -> [] int {
-    return sp.ints_len(m, ws_pool(m, nnz), interval() + 1, interval() * m + 16);
+    return sp.ints_len(m, ws_pool(m, nnz), ws_interval() + 1, ws_interval() * m + 16);
 }
 
 pub fn ws_ff_len(m: int, nnz: int) -> [] int {
-    return sp.floats_len(m, ws_pool(m, nnz), interval() + 1, interval() * m + 16);
+    return sp.floats_len(m, ws_pool(m, nnz), ws_interval() + 1, ws_interval() * m + 16);
 }
 
 // The offset in `wf` of the values of the columns (structural first, then the logicals).
@@ -846,8 +1324,9 @@ pub fn ws_zoff[&a](wi: &a [int]) -> [] int {
 // Reads the model, sets the slack basis at the bounds of the root and factorises it. 0, or 4/5 (numerical, pool).
 pub fn ws_load[&a, &b, &c, &d, &e, &f](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float], fi: &!e [int], ff: &!f [float]) -> [] int {
     setup(ints, fl, wi, wf);
+    wi[42] = ws_interval();
     let m = wi[0];
-    sp.init(fi, m, ws_pool(m, wi[3]), interval() + 1, interval() * m + 16);
+    sp.init(fi, m, ws_pool(m, wi[3]), ws_interval() + 1, ws_interval() * m + 16);
     wi[32] = 0;
     return refactor(wi, wf, fi, ff);
 }
@@ -881,7 +1360,7 @@ pub fn ws_mark_copied[&a](wi: &!a [int]) -> [] int {
 pub fn ws_refresh[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float]) -> [] int {
     if wi[32] == 1 {
         let m = wi[0];
-        sp.init(fi, m, ws_pool(m, wi[3]), interval() + 1, interval() * m + 16);
+        sp.init(fi, m, ws_pool(m, wi[3]), ws_interval() + 1, ws_interval() * m + 16);
         wi[32] = 0;
         return refactor(wi, wf, fi, ff);
     }
