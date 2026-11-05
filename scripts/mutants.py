@@ -83,7 +83,7 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             print(f"INVALID mutant {n} ({what}): does not build: {b.stderr.strip()[:200]}")
             invalid += 1
             continue
-        env = dict(os.environ, SOLVE=out)
+        env = dict(os.environ, SOLVE=out, SOLVE_METHOD="dense")  # these mutants are of the dense solver (the default `auto` would send sparse models elsewhere)
         dead = False
         for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_cli.py", "check_iterations.py"):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:

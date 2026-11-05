@@ -65,7 +65,11 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                                 let xv = contents(xw);
                                 let sv = contents(sw);
                                 var code = 0;
-                                if method == 1 {
+                                var use = method;
+                                if method == 2 {
+                                    use = auto_method(n);
+                                }
+                                if use == 1 {
                                     code = revised.solve(heap, n, f, xv, sv, limit);
                                 } else {
                                     code = simplex.solve(heap, n, f, xv, sv, limit);
@@ -73,7 +77,7 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                                 if code == 4 {
                                     status = emit.refuse(heap, io, "solve.numerical", "the sparse solver met a basis it could not factorise or a dual infeasibility it could not repair", "run with --method dense", tx, 0 - 1);
                                 } else if code == simplex.s_too_large() {
-                                    status = emit.refuse(heap, io, "solve.too-large", "the dense tableau would exceed 32,000,000 cells", "reduce the model; the dense simplex is a first solver (docs/design.md section 14)", tx, 0 - 1);
+                                    status = emit.refuse(heap, io, "solve.too-large", "the dense tableau would exceed 32,000,000 cells, or the sparse solver's factorisation outgrew its pool", "reduce the model; see docs/design.md sections 14 and 18.3.2", tx, 0 - 1);
                                 } else {
                                     status = emit.run_report(heap, io, tx, n, f, xv, sv, code, relax);
                                 }
@@ -110,6 +114,20 @@ fn parse_count[&a](text: &a [byte]) -> [] int {
         k = k + 1;
     }
     return v;
+}
+
+// `auto` (docs/design.md 18.4): the sparse solver when the tableau would not fit, or when the matrix is at most 4% full (measured: the sparse solver is faster below about 5%
+// density and slower above it); the dense tableau otherwise.
+fn auto_method[&a](ints: &a [int]) -> [] int {
+    let m = ints[layout.h_ncons()];
+    let n = ints[layout.h_nvars()];
+    if m * (n + m) + 6 * (n + m) + m > simplex.max_cells() {
+        return 1;
+    }
+    if 25 * ints[layout.h_nnz()] <= m * n {
+        return 1;
+    }
+    return 0;
 }
 
 // `--method`: 0 dense, 1 sparse, 2 auto (decided from the model's size and density by `auto_method`, docs/design.md 18.4), or -1.
@@ -152,7 +170,7 @@ fn main(world: World) -> [] int {
                     var relax = false;
                     var limit = 0 - 1;
                     var good = true;
-                    var method = 0;
+                    var method = 2;
                     var a = 2;
                     while a < arg_count(g) && good {
                         if bytes.equal(arg(g, a), "--relax") {

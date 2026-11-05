@@ -78,3 +78,33 @@ def mkp(seed, n, k):
             "maximize value: sum j in 0..n: v[j] * x[j];\n"
             "subject to\n"
             "    forall i in 0..k: cap_i: sum j in 0..n: w[i*n+j] * x[j] <= cap[i];\n")
+
+def mincost_flow(seed, nodes, arcs, cap=100):
+    """A min-cost flow LP: `arcs` random arcs (a Hamiltonian cycle first, so the graph is connected), one conservation row for each node (out - in == supply), the supplies
+    those of a hidden random flow, so the model is feasible. Rows are written out term by term: nodes x arcs-per-node terms in all (2 per arc)."""
+    r = random.Random(seed)
+    order = list(range(nodes))
+    r.shuffle(order)
+    ends = [(order[k], order[(k + 1) % nodes]) for k in range(nodes)]
+    while len(ends) < arcs:
+        a, b = r.randrange(nodes), r.randrange(nodes)
+        if a != b:
+            ends.append((a, b))
+    ends = ends[:max(arcs, nodes)]
+    a_n = len(ends)
+    flow = [r.randint(0, cap // 2) for _ in range(a_n)]
+    supply = [0] * nodes
+    out_terms = [[] for _ in range(nodes)]
+    for e, (a, b) in enumerate(ends):
+        supply[a] += flow[e]
+        supply[b] -= flow[e]
+        out_terms[a].append((e, 1))
+        out_terms[b].append((e, -1))
+    cost = [r.randint(1, 50) for _ in range(a_n)]
+    lines = [f"param a = {a_n};", f"param cost = [{', '.join(map(str, cost))}];", f"var f[0..a] : real 0..{cap};",
+             "minimize total: sum e in 0..a: cost[e] * f[e];", "subject to"]
+    for v in range(nodes):
+        lhs = " ".join(("+ " if s > 0 else "- ") + f"f[{e}]" for e, s in out_terms[v])
+        lhs = lhs[2:] if lhs.startswith("+ ") else "-" + lhs[2:]
+        lines.append(f"    n{v}: {lhs} == {supply[v]};")
+    return "\n".join(lines) + "\n"
