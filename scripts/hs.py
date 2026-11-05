@@ -69,3 +69,54 @@ def objective_of(model, x):
         return 0.0
     names = [v["name"] for v in model["variables"]]
     return obj["constant"] + sum(a * x[names[j]] for j, a in obj["terms"])
+
+# ---- S3: the MIP oracle (HiGHS through scipy.optimize.milp) and an independent re-check of integrality -----------------------------------------------------
+
+def highs_mip(model, time_limit=None):
+    """-> (status, objective in the model's sense or None, seconds, node count or None). status: 0 optimal, 2 infeasible, 1 limit, 3 other (as scipy's milp)."""
+    from scipy.optimize import milp, LinearConstraint, Bounds
+    n = len(model["variables"])
+    c, A_ub, b_ub, A_eq, b_eq, bounds, const, sign = build(model)
+    cons = []
+    if A_ub is not None:
+        cons.append(LinearConstraint(A_ub, -np.inf, b_ub))
+    if A_eq is not None:
+        cons.append(LinearConstraint(A_eq, b_eq, b_eq))
+    integ = np.array([0 if v["kind"] == "real" else 1 for v in model["variables"]])
+    opts = {} if time_limit is None else {"time_limit": time_limit}
+    t = time.perf_counter()
+    res = milp(c, constraints=cons, integrality=integ, bounds=Bounds([b[0] for b in bounds], [b[1] for b in bounds]), options=opts)
+    dt = time.perf_counter() - t
+    obj = None if res.x is None else sign * float(res.fun) + const
+    return res.status, obj, dt, getattr(res, "mip_node_count", None)
+
+def int_violation(model, x):
+    """Largest distance of an integer column's value from a whole number."""
+    worst = 0.0
+    for v in model["variables"]:
+        if v["kind"] != "real":
+            worst = max(worst, abs(x[v["name"]] - round(x[v["name"]])))
+    return worst
+
+def brute_force(model, limit=200000):
+    """Exhaustive search over a model whose variables are all integer and whose box is small: -> (best objective in the model's sense or None for infeasible), or 'big'.
+    Shares no code with the solver or with HiGHS."""
+    import itertools
+    vs = model["variables"]
+    size = 1
+    for v in vs:
+        if v["kind"] == "real":
+            return "big"
+        size *= int(v["hi"] - v["lo"] + 1)
+        if size > limit:
+            return "big"
+    obj = model["objective"]
+    best = None
+    for pt in itertools.product(*[range(int(v["lo"]), int(v["hi"]) + 1) for v in vs]):
+        if all((sum(pt[j] * a for j, a in r["terms"]) <= r["rhs"] if r["sense"] == "<=" else
+                sum(pt[j] * a for j, a in r["terms"]) >= r["rhs"] if r["sense"] == ">=" else
+                sum(pt[j] * a for j, a in r["terms"]) == r["rhs"]) for r in model["constraints"]):
+            val = (obj["constant"] + sum(pt[j] * a for j, a in obj["terms"])) if obj else 0.0
+            if best is None or (val < best if (obj is None or obj["sense"] == "minimize") else val > best):
+                best = val
+    return best

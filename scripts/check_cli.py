@@ -41,12 +41,14 @@ for n, src in enumerate(files):
     if len(src) < 600:
         for cut in range(0, len(src) + 1, 5):
             run(src[:cut], f"run file {n} cut {cut}", ("run", "--relax"))
+            run(src[:cut], f"run file {n} cut {cut} mip", ("run", "--node-limit", "20"))
         for _ in range(20):
             b = bytearray(src)
             for _ in range(rng.randint(1, 3)):
                 if b:
                     b[rng.randrange(len(b))] = rng.choice(b"();:.,*/+-<>=[]{} \n\t\0\xff0129aevx")
             run(bytes(b), f"run file {n} mutation", ("run", "--relax"))
+            run(bytes(b), f"run file {n} mutation mip", ("run", "--node-limit", "20"))
 
 # the iteration limit: lp_basic needs 2 iterations (3 before the long step of docs/design.md section 17)
 lp = open("tests/ok/lp_basic.sol", "rb").read()
@@ -57,12 +59,18 @@ for limit, want_status, want_iters, want_code in [(0, "unknown", 0, 1), (1, "unk
     if p.returncode != want_code or r["status"] != want_status or r["stats"]["iterations"] != want_iters:
         bad += 1
         print(f"FAIL iteration limit {limit}: status {p.returncode}, {r['status']}, {r['stats']}")
-# integer models are refused without --relax; bad flags are a usage error
+# S3 (docs/design.md section 19): an integer model without --relax is SOLVED now (this used to expect the refusal solve.not-built, deliberately replaced); bad flags are a usage error
 runs += 2
 p = subprocess.run([SOLVE, "run"], input=open("tests/ok/knapsack.sol", "rb").read(), capture_output=True)
-if p.returncode != 2 or json.loads(p.stderr)["error"] != "solve.not-built":
+if p.returncode != 0 or json.loads(p.stdout)["status"] != "optimal" or json.loads(p.stdout)["objective"] != 15:
     bad += 1
-    print("FAIL integer model without --relax")
+    print("FAIL integer model without --relax is not solved", p.returncode, p.stdout[:200], p.stderr[:200])
+for flags in (["--node-limit", "x"], ["--node-limit"], ["--node-limit", "2000001"], ["--node-select", "worst"], ["--branching", "random"], ["--node-select"]):
+    runs += 1
+    p = subprocess.run([SOLVE, "run", *flags], input=open("tests/ok/knapsack.sol", "rb").read(), capture_output=True)
+    if p.returncode != 2 or json.loads(p.stderr)["error"] not in ("solve.usage", "solve.too-large") or p.stdout != b"":
+        bad += 1
+        print("FAIL bad MIP flag", flags, p.returncode, p.stderr[:200])
 p = subprocess.run([SOLVE, "run", "--bogus"], input=lp, capture_output=True)
 if p.returncode != 2 or json.loads(p.stderr)["error"] != "solve.usage":
     bad += 1
