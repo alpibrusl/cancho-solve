@@ -1,0 +1,3 @@
+{"variables":[{"name":"x","kind":"int","lo":0,"hi":5},{"name":"y","kind":"int","lo":0,"hi":5}],
+ "objective":null,
+ "constraints":[{"name":"c","sense":"<=","rhs":3,"terms":[[1,1]]}]}

@@ -1,0 +1,287 @@
+edition 7;
+
+module solve.simplex;
+
+// A dense, bounded-variable dual simplex (docs/design.md section 14).
+//
+// Every variable of a model is bounded, so the slack basis is dual feasible once each structural variable sits at the bound its cost prefers: no phase 1, and no unbounded outcome.
+// One logical variable y_i = (row i activity) with the row's bounds belongs to each row; the tableau holds, for each row, `z_B(i) + sum_j T[i][j] z_j = 0` over all n + m columns,
+// so the value of a basic variable is -sum T[i][j] z_j and the pivot is Gauss-Jordan. `D` is the reduced-cost row of the minimised objective.
+//
+// The model is read from the state slices of the checker (layout.cho). Nothing here writes to them.
+
+import solve.layout as l;
+
+// results
+pub fn s_optimal() -> [] int {
+    return 0;
+}
+
+pub fn s_infeasible() -> [] int {
+    return 1;
+}
+
+pub fn s_limit() -> [] int {
+    return 2;
+}
+
+pub fn s_too_large() -> [] int {
+    return 3;
+}
+
+pub fn max_cells() -> [] int {
+    return 32000000;
+}
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// The core loop over the work slices. `w` holds T (m*N), D (N), val (N), lo (N), hi (N); `wi` holds basis (m), pos (N), at (N).
+// Returns a result code; `stats[0]` is the iteration count.
+fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], stats: &!e [int], m: int, n: int, limit: int) -> [] int {
+    let big = n + m;
+    let o_d = m * big;
+    let o_v = o_d + big;
+    let o_l = o_v + big;
+    let o_h = o_l + big;
+    let p_pos = m;
+    let p_at = m + big;
+    // bounds
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                w[o_l + ints[l.sym_base(k)] + off] = fl[l.sym_lo(k)];
+                w[o_h + ints[l.sym_base(k)] + off] = fl[l.sym_hi(k)];
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    var sign = 1.0;
+    if ints[l.h_sense()] == 2 {
+        sign = -1.0;
+    }
+    var i = 0;
+    while i < m {
+        let rhs = fl[l.row_rhs(i)];
+        let s = ints[l.row_sense(i)];
+        if s == 0 {
+            w[o_l + n + i] = -1e300;
+            w[o_h + n + i] = rhs;
+        } else if s == 1 {
+            w[o_l + n + i] = rhs;
+            w[o_h + n + i] = 1e300;
+        } else {
+            w[o_l + n + i] = rhs;
+            w[o_h + n + i] = rhs;
+        }
+        // the row: y_i - sum a_ij x_j = 0
+        var t = ints[l.row_start(i)];
+        while t < ints[l.row_start(i + 1)] {
+            w[i * big + ints[l.term_col(t)]] = -fl[l.term_coef(t)];
+            t = t + 1;
+        }
+        w[i * big + n + i] = 1.0;
+        wi[i] = n + i;
+        wi[p_pos + n + i] = i;
+        i = i + 1;
+    }
+    var t = 0;
+    while t < ints[l.h_obj_nnz()] {
+        w[o_d + ints[l.obj_col(t)]] = sign * fl[l.obj_coef(t)];
+        t = t + 1;
+    }
+    // structural variables at the bound their cost prefers
+    var j = 0;
+    while j < n {
+        wi[p_pos + j] = 0 - 1;
+        if w[o_d + j] >= 0.0 {
+            wi[p_at + j] = 0;
+            w[o_v + j] = w[o_l + j];
+        } else {
+            wi[p_at + j] = 1;
+            w[o_v + j] = w[o_h + j];
+        }
+        j = j + 1;
+    }
+    i = 0;
+    while i < m {
+        var act = 0.0;
+        var u = ints[l.row_start(i)];
+        while u < ints[l.row_start(i + 1)] {
+            act = act + fl[l.term_coef(u)] * w[o_v + ints[l.term_col(u)]];
+            u = u + 1;
+        }
+        w[o_v + n + i] = act;
+        i = i + 1;
+    }
+    var iter = 0;
+    while true {
+        // the basic variable that violates a bound most
+        var r = 0 - 1;
+        var worst = 0.0;
+        var up = false;
+        i = 0;
+        while i < m {
+            let bv = wi[i];
+            let v = w[o_v + bv];
+            let lb = w[o_l + bv];
+            let ub = w[o_h + bv];
+            var viol = 0.0;
+            var below = false;
+            if v < lb - 1e-9 * (1.0 + mag(lb)) {
+                viol = lb - v;
+                below = true;
+            } else if v > ub + 1e-9 * (1.0 + mag(ub)) {
+                viol = v - ub;
+            }
+            if viol > worst {
+                worst = viol;
+                r = i;
+                up = below;
+            }
+            i = i + 1;
+        }
+        stats[0] = iter;
+        if r < 0 {
+            return s_optimal();
+        }
+        if iter >= limit {
+            return s_limit();
+        }
+        // the entering variable: minimum dual ratio among the columns that move the basic variable the right way
+        let rb = r * big;
+        var q = 0 - 1;
+        var best = 0.0;
+        var best_abs = 0.0;
+        j = 0;
+        while j < big {
+            if wi[p_pos + j] < 0 && w[o_h + j] - w[o_l + j] > 1e-12 {
+                let a = w[rb + j];
+                if mag(a) > 1e-9 {
+                    let at = wi[p_at + j];
+                    var ok = false;
+                    if up {
+                        ok = at == 0 && a < 0.0 || at == 1 && a > 0.0;
+                    } else {
+                        ok = at == 0 && a > 0.0 || at == 1 && a < 0.0;
+                    }
+                    if ok {
+                        let ratio = mag(w[o_d + j]) / mag(a);
+                        if q < 0 || ratio < best - 1e-12 || ratio <= best + 1e-12 && mag(a) > best_abs {
+                            q = j;
+                            best = ratio;
+                            best_abs = mag(a);
+                        }
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        if q < 0 {
+            return s_infeasible();
+        }
+        let leaving = wi[r];
+        var target = w[o_h + leaving];
+        if up {
+            target = w[o_l + leaving];
+        }
+        let piv = w[rb + q];
+        let dq = -(target - w[o_v + leaving]) / piv;
+        // primal values
+        i = 0;
+        while i < m {
+            if i != r {
+                w[o_v + wi[i]] = w[o_v + wi[i]] - w[i * big + q] * dq;
+            }
+            i = i + 1;
+        }
+        w[o_v + q] = w[o_v + q] + dq;
+        w[o_v + leaving] = target;
+        // pivot
+        let inv = 1.0 / piv;
+        j = 0;
+        while j < big {
+            w[rb + j] = w[rb + j] * inv;
+            j = j + 1;
+        }
+        w[rb + q] = 1.0;
+        i = 0;
+        while i < m {
+            if i != r {
+                let f = w[i * big + q];
+                if f != 0.0 {
+                    let ib = i * big;
+                    j = 0;
+                    while j < big {
+                        w[ib + j] = w[ib + j] - f * w[rb + j];
+                        j = j + 1;
+                    }
+                    w[ib + q] = 0.0;
+                }
+            }
+            i = i + 1;
+        }
+        let fd = w[o_d + q];
+        if fd != 0.0 {
+            j = 0;
+            while j < big {
+                w[o_d + j] = w[o_d + j] - fd * w[rb + j];
+                j = j + 1;
+            }
+            w[o_d + q] = 0.0;
+        }
+        wi[p_pos + leaving] = 0 - 1;
+        if up {
+            wi[p_at + leaving] = 0;
+        } else {
+            wi[p_at + leaving] = 1;
+        }
+        wi[r] = q;
+        wi[p_pos + q] = r;
+        iter = iter + 1;
+    }
+    return s_limit();
+}
+
+// Solves the LP of the checked model in `ints`/`fl`. The values of the variables go to `x` (length at least the number of variables); `stats` gets
+// the iteration count, the rows and the columns. `limit` < 0 means the default (100 * (rows + columns) + 1000).
+pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    let big = n + m;
+    stats[0] = 0;
+    stats[1] = m;
+    stats[2] = n;
+    if m * big + 5 * big > max_cells() {
+        return s_too_large();
+    }
+    var cap = limit;
+    if limit < 0 {
+        cap = 100 * big + 1000;
+    }
+    let w = box_slice(heap, m * big + 5 * big + 1, 0.0);
+    let wi = box_slice(heap, m + 2 * big + 1, 0);
+    var status = 0;
+    borrow mut w as &!ww in {
+        borrow mut wi as &!wiw in {
+            let wf = contents(ww);
+            let wn = contents(wiw);
+            status = iterate(ints, fl, wf, wn, stats, m, n, cap);
+            var j = 0;
+            while j < n {
+                x[j] = wf[m * big + big + j];
+                j = j + 1;
+            }
+        }
+    }
+    unbox_slice(heap, wi);
+    unbox_slice(heap, w);
+    return status;
+}

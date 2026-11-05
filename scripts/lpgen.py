@@ -1,0 +1,80 @@
+"""Instance generators shared by check_highs.py and bench_highs.py. Every function returns the text of a `.sol` model; the seed fixes it."""
+import random
+
+def _num(x):
+    return str(int(x)) if x == int(x) else repr(x)
+
+def _expr(coefs, names):
+    out = []
+    for c, v in zip(coefs, names):
+        if c == 0:
+            continue
+        out.append(("+ " if c > 0 else "- ") + (f"{_num(abs(c))}*" if abs(c) != 1 else "") + v)
+    if not out:
+        return "0*" + names[0]
+    s = " ".join(out)
+    return s[2:] if s.startswith("+ ") else "-" + s[2:]
+
+def random_lp(seed, m, n, density=0.5, infeasible=False):
+    """Boxed variables, rows of the three senses, rhs built from a hidden integer point so the model is feasible unless `infeasible`."""
+    r = random.Random(seed)
+    names = [f"v{j}" for j in range(n)]
+    lo = [r.randint(-5, 2) for _ in range(n)]
+    hi = [l + r.randint(1, 8) for l in lo]
+    x0 = [r.randint(l, h) for l, h in zip(lo, hi)]
+    lines = [f"var {v} : real {l}..{h};" for v, l, h in zip(names, lo, hi)]
+    c = [r.randint(-9, 9) for _ in range(n)]
+    lines.append(("minimize " if r.random() < 0.5 else "maximize ") + _expr(c, names) + ";")
+    lines.append("subject to")
+    for i in range(m):
+        a = [r.randint(-9, 9) if r.random() < density else 0 for _ in range(n)]
+        if not any(a):
+            a[r.randrange(n)] = 1
+        act = sum(ai * xi for ai, xi in zip(a, x0))
+        k = r.random()
+        if k < 0.4:
+            op, rhs = "<=", act + r.randint(0, 6)
+        elif k < 0.8:
+            op, rhs = ">=", act - r.randint(0, 6)
+        else:
+            op, rhs = "==", act
+        lines.append(f"    c{i}: {_expr(a, names)} {op} {rhs};")
+    if infeasible:
+        j = r.randrange(n)
+        lines.append(f"    cut: {names[j]} >= {hi[j] + 1};")
+    return "\n".join(lines) + "\n"
+
+def transportation(seed, s, d):
+    r = random.Random(seed)
+    dem = [r.randint(5, 30) for _ in range(d)]
+    total = sum(dem)
+    sup = [total // s + r.randint(3, 12) for _ in range(s)]
+    cost = [r.randint(1, 40) for _ in range(s * d)]
+    return (f"param s = {s};\nparam d = {d};\nparam sup = [{', '.join(map(str, sup))}];\nparam dem = [{', '.join(map(str, dem))}];\n"
+            f"param cost = [{', '.join(map(str, cost))}];\n"
+            f"var f[0..s, 0..d] : real 0..{max(sup)};\n"
+            "minimize total: sum i in 0..s: sum j in 0..d: cost[i*d+j] * f[i,j];\n"
+            "subject to\n"
+            "    forall i in 0..s: supply: sum j in 0..d: f[i,j] <= sup[i];\n"
+            "    forall j in 0..d: demand: sum i in 0..s: f[i,j] >= dem[j];\n")
+
+def assignment(seed, n):
+    r = random.Random(seed)
+    cost = [r.randint(1, 50) for _ in range(n * n)]
+    return (f"param n = {n};\nparam c = [{', '.join(map(str, cost))}];\nvar a[0..n, 0..n] : bool;\n"
+            "minimize cost: sum i in 0..n: sum j in 0..n: c[i*n+j] * a[i,j];\n"
+            "subject to\n"
+            "    forall i in 0..n: row: sum j in 0..n: a[i,j] == 1;\n"
+            "    forall j in 0..n: col: sum i in 0..n: a[i,j] == 1;\n")
+
+def mkp(seed, n, k):
+    """Multi-dimensional knapsack; the relaxation is the LP."""
+    r = random.Random(seed)
+    w = [r.randint(5, 40) for _ in range(n * k)]
+    v = [r.randint(10, 60) for _ in range(n)]
+    cap = [sum(w[i * n:(i + 1) * n]) // 3 for i in range(k)]
+    return (f"param n = {n};\nparam k = {k};\nparam w = [{', '.join(map(str, w))}];\nparam v = [{', '.join(map(str, v))}];\n"
+            f"param cap = [{', '.join(map(str, cap))}];\nvar x[0..n] : bool;\n"
+            "maximize value: sum j in 0..n: v[j] * x[j];\n"
+            "subject to\n"
+            "    forall i in 0..k: cap_i: sum j in 0..n: w[i*n+j] * x[j] <= cap[i];\n")

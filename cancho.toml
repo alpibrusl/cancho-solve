@@ -1,0 +1,9 @@
+[package]
+name = "solve"
+cancho = "5a5dd1f21250b96b3f735a45b781489374219466"
+
+[[bin]]
+name = "solve"
+sources = ["lib/model", "lib/lp", "tools/solve"]
+std = true
+out = "build/solve"

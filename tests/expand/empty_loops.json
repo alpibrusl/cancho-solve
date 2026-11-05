@@ -1,0 +1,3 @@
+{"variables":[{"name":"x[0]","kind":"bool","lo":0,"hi":1},{"name":"x[1]","kind":"bool","lo":0,"hi":1},{"name":"x[2]","kind":"bool","lo":0,"hi":1},{"name":"y","kind":"real","lo":0,"hi":1}],
+ "objective":{"sense":"minimize","constant":0,"terms":[[3,2]]},
+ "constraints":[{"name":"after","sense":"<=","rhs":1,"terms":[[3,1]]}]}

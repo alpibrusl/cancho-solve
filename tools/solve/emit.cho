@@ -1,0 +1,445 @@
+edition 7;
+
+module solve.emit;
+
+// What `solve` prints: results, refusals, the expanded model, and the command surface as data (docs/design.md sections 5 and 12).
+
+import solve.layout as l;
+import solve.lex as lx;
+import std.buffer;
+import std.io;
+import std.json;
+
+// One line of JSON on standard output.
+pub fn print_json[&h, &i](heap: &!h Heap, io: &!i Io, w: json.Writer) -> [heap, io_write] int {
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        buffer.write(io, or);
+    }
+    buffer.drop(heap, out);
+    return 0;
+}
+
+// A refusal: one JSON object on standard error, status 2. `at` is a byte position in `text` (or -1 for none).
+pub fn refuse[&h, &i, &t](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte], repair: &static [byte], text: &t [byte], at: int) -> [heap, err_write] int {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "error");
+    w = json.put_string(heap, w, rule);
+    w = json.put_key(heap, w, "message");
+    w = json.put_string(heap, w, message);
+    w = json.put_key(heap, w, "repair");
+    w = json.put_string(heap, w, repair);
+    if at >= 0 {
+        w = json.put_key(heap, w, "at");
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "line");
+        w = json.put_int(heap, w, lx.line_of(text, at));
+        w = json.put_key(heap, w, "col");
+        w = json.put_int(heap, w, lx.col_of(text, at));
+        w = json.end_object(heap, w);
+    }
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        io.error_all(io, buffer.bytes(or));
+    }
+    buffer.drop(heap, out);
+    return 2;
+}
+
+// The summary `check` prints.
+pub fn report[&h, &i, &a](heap: &!h Heap, io: &!i Io, ints: &a [int]) -> [heap, io_write] int {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "status");
+    w = json.put_string(heap, w, "ok");
+    w = json.put_key(heap, w, "class");
+    if ints[l.h_nints()] > 0 {
+        w = json.put_string(heap, w, "MIP");
+    } else {
+        w = json.put_string(heap, w, "LP");
+    }
+    w = json.put_key(heap, w, "variables");
+    w = json.put_int(heap, w, ints[l.h_nvars()]);
+    w = json.put_key(heap, w, "integer");
+    w = json.put_int(heap, w, ints[l.h_nints()]);
+    w = json.put_key(heap, w, "constraints");
+    w = json.put_int(heap, w, ints[l.h_ncons()]);
+    w = json.put_key(heap, w, "nonzeros");
+    w = json.put_int(heap, w, ints[l.h_nnz()]);
+    w = json.put_key(heap, w, "objective");
+    if ints[l.h_sense()] == 1 {
+        w = json.put_string(heap, w, "minimize");
+    } else if ints[l.h_sense()] == 2 {
+        w = json.put_string(heap, w, "maximize");
+    } else {
+        w = json.put_string(heap, w, "none");
+    }
+    w = json.end_object(heap, w);
+    return print_json(heap, io, w);
+}
+
+// --------------------------------------------------------------- names ---
+
+fn push_int[&h](heap: &!h Heap, b: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    var out = b;
+    if n < 0 {
+        out = buffer.push(heap, out, byte_of('-'));
+        return buffer.push_nat(heap, out, 0 - n);
+    }
+    return buffer.push_nat(heap, out, n);
+}
+
+// `[i]` or `[i,j]` for the element `off` of the variable `k`; nothing for a scalar.
+fn element_suffix[&h, &a](heap: &!h Heap, b: buffer.Buffer, ints: &a [int], k: int, off: int) -> [heap] buffer.Buffer {
+    var out = b;
+    let nd = ints[l.sym_nd(k)];
+    if nd == 1 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.sym_lo0(k)] + off);
+        out = buffer.push(heap, out, byte_of(']'));
+    } else if nd == 2 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.sym_lo0(k)] + off / ints[l.sym_n1(k)]);
+        out = buffer.push(heap, out, byte_of(','));
+        out = push_int(heap, out, ints[l.sym_lo1(k)] + off % ints[l.sym_n1(k)]);
+        out = buffer.push(heap, out, byte_of(']'));
+    }
+    return out;
+}
+
+fn var_name[&h, &t, &a](heap: &!h Heap, text: &t [byte], ints: &a [int], k: int, off: int) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 16);
+    out = buffer.append(heap, out, text[ints[l.sym_s(k)]..ints[l.sym_e(k)]]);
+    return element_suffix(heap, out, ints, k, off);
+}
+
+// The label of a row followed by the loop values it was made under: `row[1]`, `cap[0,2]`.
+fn row_name[&h, &t, &a](heap: &!h Heap, text: &t [byte], ints: &a [int], r: int) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 16);
+    out = buffer.append(heap, out, text[ints[l.row_ns(r)]..ints[l.row_ne(r)]]);
+    let n = ints[l.row_nidx(r)];
+    if n > 0 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.row_i0(r)]);
+        if n > 1 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i1(r)]);
+        }
+        if n > 2 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i2(r)]);
+        }
+        if n > 3 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i3(r)]);
+        }
+        out = buffer.push(heap, out, byte_of(']'));
+    }
+    return out;
+}
+
+// -------------------------------------------------------------- expand ---
+
+fn put_terms[&h, &a, &b](heap: &!h Heap, w: json.Writer, ints: &a [int], fl: &b [float], col: int, coef: int, from: int, to: int) -> [heap] json.Writer {
+    var out = json.put_key(heap, w, "terms");
+    out = json.begin_array(heap, out);
+    var t = from;
+    while t < to {
+        out = json.begin_array(heap, out);
+        out = json.put_int(heap, out, ints[col + t]);
+        out = json.put_float(heap, out, fl[coef + t]);
+        out = json.end_array(heap, out);
+        t = t + 1;
+    }
+    return json.end_array(heap, out);
+}
+
+// The expanded model (docs/design.md section 12).
+pub fn expand[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &a [int], fl: &b [float]) -> [heap, io_write] int {
+    var w = json.writer(heap, 4096);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "variables");
+    w = json.begin_array(heap, w);
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                w = json.begin_object(heap, w);
+                w = json.put_key(heap, w, "name");
+                let nm = var_name(heap, text, ints, k, off);
+                borrow nm as &nb in {
+                    w = json.put_string(heap, w, buffer.bytes(nb));
+                }
+                buffer.drop(heap, nm);
+                w = json.put_key(heap, w, "kind");
+                if ints[l.sym_kind(k)] == 0 {
+                    w = json.put_string(heap, w, "bool");
+                } else if ints[l.sym_kind(k)] == 1 {
+                    w = json.put_string(heap, w, "int");
+                } else {
+                    w = json.put_string(heap, w, "real");
+                }
+                w = json.put_key(heap, w, "lo");
+                w = json.put_float(heap, w, fl[l.sym_lo(k)] + 0.0);
+                w = json.put_key(heap, w, "hi");
+                w = json.put_float(heap, w, fl[l.sym_hi(k)] + 0.0);
+                w = json.end_object(heap, w);
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "objective");
+    if ints[l.h_sense()] == 0 {
+        w = json.put_null(heap, w);
+    } else {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "sense");
+        if ints[l.h_sense()] == 1 {
+            w = json.put_string(heap, w, "minimize");
+        } else {
+            w = json.put_string(heap, w, "maximize");
+        }
+        if ints[l.h_obj_ne()] > ints[l.h_obj_ns()] {
+            w = json.put_key(heap, w, "name");
+            w = json.put_string(heap, w, text[ints[l.h_obj_ns()]..ints[l.h_obj_ne()]]);
+        }
+        w = json.put_key(heap, w, "constant");
+        w = json.put_float(heap, w, fl[l.obj_const(0)] + 0.0);
+        w = put_terms(heap, w, ints, fl, l.obj_col(0), l.obj_coef(0), 0, ints[l.h_obj_nnz()]);
+        w = json.end_object(heap, w);
+    }
+    w = json.put_key(heap, w, "constraints");
+    w = json.begin_array(heap, w);
+    var r = 0;
+    while r < ints[l.h_ncons()] {
+        w = json.begin_object(heap, w);
+        if ints[l.row_ne(r)] > ints[l.row_ns(r)] {
+            w = json.put_key(heap, w, "name");
+            let nm = row_name(heap, text, ints, r);
+            borrow nm as &nb in {
+                w = json.put_string(heap, w, buffer.bytes(nb));
+            }
+            buffer.drop(heap, nm);
+        }
+        w = json.put_key(heap, w, "sense");
+        if ints[l.row_sense(r)] == 0 {
+            w = json.put_string(heap, w, "<=");
+        } else if ints[l.row_sense(r)] == 1 {
+            w = json.put_string(heap, w, ">=");
+        } else {
+            w = json.put_string(heap, w, "==");
+        }
+        w = json.put_key(heap, w, "rhs");
+        w = json.put_float(heap, w, fl[l.row_rhs(r)]);
+        w = put_terms(heap, w, ints, fl, l.term_col(0), l.term_coef(0), ints[l.row_start(r)], ints[l.row_start(r + 1)]);
+        w = json.end_object(heap, w);
+        r = r + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return print_json(heap, io, w);
+}
+
+// -------------------------------------------------------------- run ---
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// The largest violation of a bound or a row by `x`, relative to 1 + |the bound or right side|. Reads the checked model only, not the simplex.
+fn max_violation[&a, &b, &c](ints: &a [int], fl: &b [float], x: &c [float]) -> [] float {
+    var worst = 0.0;
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let v = x[ints[l.sym_base(k)] + off];
+                let lo = fl[l.sym_lo(k)];
+                let hi = fl[l.sym_hi(k)];
+                if (lo - v) / (1.0 + mag(lo)) > worst {
+                    worst = (lo - v) / (1.0 + mag(lo));
+                }
+                if (v - hi) / (1.0 + mag(hi)) > worst {
+                    worst = (v - hi) / (1.0 + mag(hi));
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    var r = 0;
+    while r < ints[l.h_ncons()] {
+        var act = 0.0;
+        var t = ints[l.row_start(r)];
+        while t < ints[l.row_start(r + 1)] {
+            act = act + fl[l.term_coef(t)] * x[ints[l.term_col(t)]];
+            t = t + 1;
+        }
+        let rhs = fl[l.row_rhs(r)];
+        let scale = 1.0 + mag(rhs);
+        var d = 0.0;
+        if ints[l.row_sense(r)] == 0 {
+            d = (act - rhs) / scale;
+        } else if ints[l.row_sense(r)] == 1 {
+            d = (rhs - act) / scale;
+        } else {
+            d = mag(act - rhs) / scale;
+        }
+        if d > worst {
+            worst = d;
+        }
+        r = r + 1;
+    }
+    return worst;
+}
+
+// The result of `run` (docs/design.md sections 5 and 14). `status` is the simplex's result code. Returns the exit status: 0 for a proof, 1 for a limit.
+pub fn run_report[&h, &i, &t, &a, &b, &c, &d](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &a [int], fl: &b [float], x: &c [float], stats: &d [int], status: int, relaxed: bool) -> [heap, io_write] int {
+    var w = json.writer(heap, 4096);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "status");
+    if status == 0 {
+        w = json.put_string(heap, w, "optimal");
+    } else if status == 1 {
+        w = json.put_string(heap, w, "infeasible");
+    } else {
+        w = json.put_string(heap, w, "unknown");
+        w = json.put_key(heap, w, "limit");
+        w = json.put_string(heap, w, "iterations");
+    }
+    if relaxed {
+        w = json.put_key(heap, w, "relaxed");
+        w = json.put_bool(heap, w, true);
+    }
+    if status == 0 {
+        var obj = 0.0;
+        if ints[l.h_sense()] != 0 {
+            obj = fl[l.obj_const(0)];
+            var t2 = 0;
+            while t2 < ints[l.h_obj_nnz()] {
+                obj = obj + fl[l.obj_coef(t2)] * x[ints[l.obj_col(t2)]];
+                t2 = t2 + 1;
+            }
+        }
+        let viol = max_violation(ints, fl, x);
+        w = json.put_key(heap, w, "objective");
+        w = json.put_float(heap, w, obj);
+        w = json.put_key(heap, w, "x");
+        w = json.begin_object(heap, w);
+        var k = 0;
+        while k < ints[l.h_nsym()] {
+            if ints[l.sym_class(k)] == 1 {
+                var off = 0;
+                while off < ints[l.sym_size(k)] {
+                    let nm = var_name(heap, text, ints, k, off);
+                    borrow nm as &nb in {
+                        w = json.put_key(heap, w, buffer.bytes(nb));
+                    }
+                    buffer.drop(heap, nm);
+                    w = json.put_float(heap, w, x[ints[l.sym_base(k)] + off] + 0.0);
+                    off = off + 1;
+                }
+            }
+            k = k + 1;
+        }
+        w = json.end_object(heap, w);
+        w = json.put_key(heap, w, "verified");
+        w = json.put_bool(heap, w, viol <= 1e-6);
+        w = json.put_key(heap, w, "max_violation");
+        w = json.put_float(heap, w, viol);
+    }
+    w = json.put_key(heap, w, "stats");
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "iterations");
+    w = json.put_int(heap, w, stats[0]);
+    w = json.put_key(heap, w, "rows");
+    w = json.put_int(heap, w, stats[1]);
+    w = json.put_key(heap, w, "columns");
+    w = json.put_int(heap, w, stats[2]);
+    w = json.end_object(heap, w);
+    w = json.end_object(heap, w);
+    print_json(heap, io, w);
+    if status == 2 {
+        return 1;
+    }
+    return 0;
+}
+
+// ------------------------------------------------------ the command surface ---
+
+fn command[&h](heap: &!h Heap, w: json.Writer, name: &static [byte], what: &static [byte], input: &static [byte], output: &static [byte]) -> [heap] json.Writer {
+    var out = json.begin_object(heap, w);
+    out = json.put_key(heap, out, "name");
+    out = json.put_string(heap, out, name);
+    out = json.put_key(heap, out, "description");
+    out = json.put_string(heap, out, what);
+    out = json.put_key(heap, out, "stdin");
+    out = json.put_string(heap, out, input);
+    out = json.put_key(heap, out, "stdout");
+    out = json.put_string(heap, out, output);
+    return json.end_object(heap, out);
+}
+
+pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
+    var w = json.writer(heap, 2048);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "name");
+    w = json.put_string(heap, w, "solve");
+    w = json.put_key(heap, w, "commands");
+    w = json.begin_array(heap, w);
+    w = command(heap, w, "check", "read a .sol model and check it", "a .sol model", "status, class (LP or MIP), sizes and objective sense");
+    w = command(heap, w, "expand", "read a .sol model and print the expanded flat model", "a .sol model", "the flat model as JSON: variables, objective, constraints");
+    w = command(heap, w, "run", "solve the linear program of a .sol model (flags: --relax, --iteration-limit N)", "a .sol model", "status, objective, x by name, stats, verified");
+    w = command(heap, w, "introspect", "print this description", "nothing", "this object");
+    w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "exit_codes");
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "0");
+    w = json.put_string(heap, w, "the model is accepted");
+    w = json.put_key(heap, w, "1");
+    w = json.put_string(heap, w, "run stopped at a limit; status is unknown");
+    w = json.put_key(heap, w, "2");
+    w = json.put_string(heap, w, "a refusal: standard error holds {error, message, repair, at}");
+    w = json.end_object(heap, w);
+    w = json.put_key(heap, w, "rules");
+    w = json.begin_array(heap, w);
+    var code = 1;
+    while code <= lx.rule_count() {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "rule");
+        w = json.put_string(heap, w, lx.rule_name(code));
+        w = json.put_key(heap, w, "message");
+        w = json.put_string(heap, w, lx.rule_message(code));
+        w = json.put_key(heap, w, "repair");
+        w = json.put_string(heap, w, lx.rule_repair(code));
+        w = json.end_object(heap, w);
+        code = code + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return print_json(heap, io, w);
+}
+
+pub fn skill[&i](io: &!i Io) -> [io_write] int {
+    io.write_all(io, "# solve: writing a model\n\n");
+    io.write_all(io, "`solve check < model.sol` checks a model; `solve expand < model.sol` prints it flat as JSON; `solve run [--relax] < model.sol` solves its linear program (integer variables need --relax until the MIP solver exists). A refusal is JSON on standard error with a rule tag and a position.\n\n");
+    io.write_all(io, "param n = 4;                       // a number, or [1, 2, 3] for an array (0-based)\n");
+    io.write_all(io, "var x[0..n] : bool;                // or: int LO..HI, real LO..HI; one or two index ranges, half-open\n");
+    io.write_all(io, "maximize total: sum i in 0..n: v[i] * x[i];   // a sum's body is one term; parenthesise a longer one\n");
+    io.write_all(io, "subject to\n");
+    io.write_all(io, "    cap: sum i in 0..n: w[i] * x[i] <= 15;\n");
+    io.write_all(io, "    forall i in 0..n: lim: x[i] <= 1;       // one constraint for each i, named lim[i]\n\n");
+    io.write_all(io, "Every variable needs bounds. Terms must be linear: a number times one variable; ranges, indices and bounds are constants.\n");
+    io.write_all(io, "Reserved and not built yet: all_different, cumulative, element.\n");
+    return 0;
+}

@@ -1,0 +1,3 @@
+{"variables":[{"name":"x","kind":"real","lo":0,"hi":10}],
+ "objective":{"sense":"minimize","constant":4,"terms":[[0,3]]},
+ "constraints":[{"sense":">=","rhs":3,"terms":[[0,2]]}]}

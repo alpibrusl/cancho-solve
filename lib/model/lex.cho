@@ -1,0 +1,403 @@
+edition 7;
+
+module solve.lex;
+
+// Reading the bytes of a `.sol` model: blanks, comments, words, numbers, and the symbol tables (docs/design.md sections 2.1 and 12).
+// Every function takes the model text and the `ints` state slice (layout.cho); a refusal is a rule code and a byte position in the header, and the first one is kept.
+
+import solve.layout as l;
+import std.bytes;
+
+// rule codes
+pub fn r_syntax() -> [] int {
+    return 1;
+}
+
+pub fn r_undeclared() -> [] int {
+    return 2;
+}
+
+pub fn r_redeclared() -> [] int {
+    return 3;
+}
+
+pub fn r_unbounded() -> [] int {
+    return 4;
+}
+
+pub fn r_bad_bounds() -> [] int {
+    return 5;
+}
+
+pub fn r_nonlinear() -> [] int {
+    return 6;
+}
+
+pub fn r_two_objectives() -> [] int {
+    return 7;
+}
+
+pub fn r_too_large() -> [] int {
+    return 8;
+}
+
+pub fn r_not_built() -> [] int {
+    return 9;
+}
+
+pub fn r_divide_by_zero() -> [] int {
+    return 10;
+}
+
+pub fn r_not_constant() -> [] int {
+    return 11;
+}
+
+pub fn r_bad_index() -> [] int {
+    return 12;
+}
+
+pub fn rule_count() -> [] int {
+    return 12;
+}
+
+pub fn rule_name(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "solve.syntax";
+    }
+    if code == 2 {
+        return "solve.undeclared";
+    }
+    if code == 3 {
+        return "solve.redeclared";
+    }
+    if code == 4 {
+        return "solve.unbounded-domain";
+    }
+    if code == 5 {
+        return "solve.bad-bounds";
+    }
+    if code == 6 {
+        return "solve.nonlinear";
+    }
+    if code == 7 {
+        return "solve.two-objectives";
+    }
+    if code == 8 {
+        return "solve.too-large";
+    }
+    if code == 9 {
+        return "solve.not-built";
+    }
+    if code == 10 {
+        return "solve.divide-by-zero";
+    }
+    if code == 11 {
+        return "solve.not-constant";
+    }
+    return "solve.bad-index";
+}
+
+pub fn rule_message(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "the text is not in the model language";
+    }
+    if code == 2 {
+        return "a name that is not declared";
+    }
+    if code == 3 {
+        return "a name is declared twice";
+    }
+    if code == 4 {
+        return "a variable has no bounds";
+    }
+    if code == 5 {
+        return "a bound is above the other, or an integer variable has a bound that is not whole";
+    }
+    if code == 6 {
+        return "a product or quotient of variables is not linear";
+    }
+    if code == 7 {
+        return "a model has at most one objective";
+    }
+    if code == 8 {
+        return "the model is larger than a limit";
+    }
+    if code == 9 {
+        return "this part of the language is reserved and not built yet";
+    }
+    if code == 10 {
+        return "a division by zero";
+    }
+    if code == 11 {
+        return "a range, an index or a bound must be a constant, and this one holds a variable";
+    }
+    return "an index is not a whole number inside the declared range, or has the wrong number of dimensions";
+}
+
+pub fn rule_repair(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "see the grammar in docs/design.md sections 2.1 and 12";
+    }
+    if code == 2 {
+        return "declare it: var NAME : bool | int LO..HI | real LO..HI;  or  param NAME = VALUE;";
+    }
+    if code == 3 {
+        return "give each name one meaning; a loop index may not reuse a variable or param name";
+    }
+    if code == 4 {
+        return "write the bounds: var x : real 0..10;";
+    }
+    if code == 5 {
+        return "swap the bounds, or write whole numbers for an int variable";
+    }
+    if code == 6 {
+        return "keep each term to one variable times numbers; a product of two variables needs a linearisation";
+    }
+    if code == 7 {
+        return "keep one minimize or maximize; combine them into one expression";
+    }
+    if code == 8 {
+        return "reduce the model or its loops; the limits are in docs/design.md sections 6 and 12";
+    }
+    if code == 9 {
+        return "this keyword is reserved for a later milestone (docs/design.md section 9)";
+    }
+    if code == 10 {
+        return "divide by a nonzero number";
+    }
+    if code == 11 {
+        return "use params and loop indices there, not variables";
+    }
+    return "write one whole-number index for each dimension, inside the range the variable or param was declared with";
+}
+
+// ----------------------------------------------------------- refusals ---
+
+pub fn fail[&a](ints: &!a [int], rule: int, at: int) -> [] int {
+    if ints[l.h_rule()] == 0 {
+        ints[l.h_rule()] = rule;
+        ints[l.h_at()] = at;
+    }
+    return 0;
+}
+
+pub fn failed[&a](ints: &!a [int]) -> [] bool {
+    return ints[l.h_rule()] != 0;
+}
+
+// ------------------------------------------------------------ characters ---
+
+pub fn is_ident_start(c: int) -> [] bool {
+    return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_';
+}
+
+pub fn is_ident_char(c: int) -> [] bool {
+    return is_ident_start(c) || c >= '0' && c <= '9';
+}
+
+pub fn is_digit(c: int) -> [] bool {
+    return c >= '0' && c <= '9';
+}
+
+pub fn char_at[&s](text: &s [byte], at: int) -> [] int {
+    if at < 0 || at >= len(text) {
+        return 0 - 1;
+    }
+    return int_of(text[at]);
+}
+
+// Past blanks and `//` comments.
+pub fn skip[&s, &a](text: &s [byte], ints: &!a [int]) -> [] int {
+    var at = ints[l.h_pos()];
+    var going = true;
+    while going {
+        let c = char_at(text, at);
+        if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+            at = at + 1;
+        } else if c == '/' && char_at(text, at + 1) == '/' {
+            while at < len(text) && int_of(text[at]) != '\n' {
+                at = at + 1;
+            }
+        } else {
+            going = false;
+        }
+    }
+    ints[l.h_pos()] = at;
+    return at;
+}
+
+// The character at the next token, or -1 at the end.
+pub fn peek[&s, &a](text: &s [byte], ints: &!a [int]) -> [] int {
+    return char_at(text, skip(text, ints));
+}
+
+pub fn word_end[&s](text: &s [byte], from: int) -> [] int {
+    var at = from;
+    while at < len(text) && is_ident_char(int_of(text[at])) {
+        at = at + 1;
+    }
+    return at;
+}
+
+pub fn word_is[&s](text: &s [byte], from: int, to: int, w: &static [byte]) -> [] bool {
+    return bytes.equal(text[from..to], w);
+}
+
+// Words that start a top-level statement.
+pub fn starts_statement[&s](text: &s [byte], from: int, to: int) -> [] bool {
+    return word_is(text, from, to, "var") || word_is(text, from, to, "minimize") || word_is(text, from, to, "maximize") || word_is(text, from, to, "subject") || word_is(text, from, to, "param");
+}
+
+// Words reserved for later milestones (docs/design.md section 2.1).
+pub fn is_reserved[&s](text: &s [byte], from: int, to: int) -> [] bool {
+    return word_is(text, from, to, "all_different") || word_is(text, from, to, "cumulative") || word_is(text, from, to, "element");
+}
+
+// Words that may not name anything.
+pub fn is_keyword[&s](text: &s [byte], from: int, to: int) -> [] bool {
+    return starts_statement(text, from, to) || is_reserved(text, from, to) || word_is(text, from, to, "sum") || word_is(text, from, to, "forall") || word_is(text, from, to, "in") || word_is(text, from, to, "to") || word_is(text, from, to, "bool") || word_is(text, from, to, "int") || word_is(text, from, to, "real");
+}
+
+pub fn expect[&s, &a](text: &s [byte], ints: &!a [int], c: int) -> [] int {
+    let at = skip(text, ints);
+    if char_at(text, at) == c {
+        ints[l.h_pos()] = at + 1;
+    } else {
+        fail(ints, r_syntax(), at);
+    }
+    return 0;
+}
+
+// The next word must be `w`.
+pub fn expect_word[&s, &a](text: &s [byte], ints: &!a [int], w: &static [byte]) -> [] int {
+    let at = skip(text, ints);
+    let to = word_end(text, at);
+    if to > at && word_is(text, at, to, w) {
+        ints[l.h_pos()] = to;
+    } else {
+        fail(ints, r_syntax(), at);
+    }
+    return 0;
+}
+
+// A decimal number: digits, an optional fraction (a dot followed by a digit, so `0..10` is two numbers), an optional exponent.
+// Digits are gathered as an integer-valued float and divided once by a power of ten, so the result is the correctly rounded value of the literal.
+pub fn parse_number[&s, &a](text: &s [byte], ints: &!a [int]) -> [] float {
+    var at = skip(text, ints);
+    let start = at;
+    var v = 0.0;
+    var scale = 0;
+    var any = false;
+    while is_digit(char_at(text, at)) {
+        v = v * 10.0 + float_of(char_at(text, at) - '0');
+        at = at + 1;
+        any = true;
+    }
+    if char_at(text, at) == '.' && is_digit(char_at(text, at + 1)) {
+        at = at + 1;
+        while is_digit(char_at(text, at)) {
+            v = v * 10.0 + float_of(char_at(text, at) - '0');
+            scale = scale + 1;
+            at = at + 1;
+            any = true;
+        }
+    }
+    if !any {
+        fail(ints, r_syntax(), start);
+        return 0.0;
+    }
+    var e = 0 - scale;
+    let c = char_at(text, at);
+    if c == 'e' || c == 'E' {
+        var q = at + 1;
+        var neg = false;
+        if char_at(text, q) == '-' {
+            neg = true;
+            q = q + 1;
+        } else if char_at(text, q) == '+' {
+            q = q + 1;
+        }
+        if is_digit(char_at(text, q)) {
+            var x = 0;
+            while is_digit(char_at(text, q)) && x < 10000 {
+                x = x * 10 + (char_at(text, q) - '0');
+                q = q + 1;
+            }
+            if neg {
+                e = e - x;
+            } else {
+                e = e + x;
+            }
+            at = q;
+        }
+    }
+    ints[l.h_pos()] = at;
+    var k = e;
+    if e < 0 {
+        k = 0 - e;
+    }
+    var p = 1.0;
+    var i = 0;
+    while i < k && i < 400 {
+        p = p * 10.0;
+        i = i + 1;
+    }
+    if e < 0 {
+        return v / p;
+    }
+    return v * p;
+}
+
+// ------------------------------------------------------------- symbols ---
+
+// The declared name (variable or param) whose text is text[from..to], or -1.
+pub fn find_sym[&s, &a](text: &s [byte], ints: &!a [int], from: int, to: int) -> [] int {
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if bytes.equal(text[ints[l.sym_s(k)]..ints[l.sym_e(k)]], text[from..to]) {
+            return k;
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+// The active loop index whose name is text[from..to], or -1 (the innermost wins).
+pub fn find_loop[&s, &a](text: &s [byte], ints: &!a [int], from: int, to: int) -> [] int {
+    var k = ints[l.h_nlv()] - 1;
+    while k >= 0 {
+        if bytes.equal(text[ints[l.lv_s(k)]..ints[l.lv_e(k)]], text[from..to]) {
+            return k;
+        }
+        k = k - 1;
+    }
+    return 0 - 1;
+}
+
+// 1-based line and column of a byte position.
+pub fn line_of[&s](text: &s [byte], at: int) -> [] int {
+    var line = 1;
+    var i = 0;
+    while i < at && i < len(text) {
+        if int_of(text[i]) == '\n' {
+            line = line + 1;
+        }
+        i = i + 1;
+    }
+    return line;
+}
+
+pub fn col_of[&s](text: &s [byte], at: int) -> [] int {
+    var col = 1;
+    var i = 0;
+    while i < at && i < len(text) {
+        if int_of(text[i]) == '\n' {
+            col = 1;
+        } else {
+            col = col + 1;
+        }
+        i = i + 1;
+    }
+    return col;
+}

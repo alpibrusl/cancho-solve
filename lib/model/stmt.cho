@@ -1,0 +1,498 @@
+edition 7;
+
+module solve.stmt;
+
+// The statements of the `.sol` language (docs/design.md sections 2.1 and 12): `param`, `var`, `minimize`/`maximize`, `subject to` with `forall`.
+// `check` reads a whole model and leaves the flat model in the two state slices (layout.cho); the verdict is the rule code it returns, 0 for an accepted model.
+
+import solve.expr as ex;
+import solve.layout as l;
+import solve.lex as lx;
+
+// Records a new name (variable or param). Returns its index, or -1 when it was refused.
+fn declare[&s, &a](text: &s [byte], ints: &!a [int], at: int, to: int) -> [] int {
+    if lx.is_reserved(text, at, to) {
+        lx.fail(ints, lx.r_not_built(), at);
+        return 0 - 1;
+    }
+    if lx.is_keyword(text, at, to) {
+        lx.fail(ints, lx.r_syntax(), at);
+        return 0 - 1;
+    }
+    if lx.find_sym(text, ints, at, to) >= 0 || lx.find_loop(text, ints, at, to) >= 0 {
+        lx.fail(ints, lx.r_redeclared(), at);
+        return 0 - 1;
+    }
+    let k = ints[l.h_nsym()];
+    if k >= l.maxsym() {
+        lx.fail(ints, lx.r_too_large(), at);
+        return 0 - 1;
+    }
+    ints[l.sym_s(k)] = at;
+    ints[l.sym_e(k)] = to;
+    ints[l.sym_nd(k)] = 0;
+    ints[l.sym_lo0(k)] = 0;
+    ints[l.sym_n0(k)] = 1;
+    ints[l.sym_lo1(k)] = 0;
+    ints[l.sym_n1(k)] = 1;
+    return k;
+}
+
+// A range `A..B` in a declaration: its start and length.
+fn dimension[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], at: int, k: int, which: int) -> [] int {
+    let lo = ex.num_expr(text, ints, fl);
+    lx.expect(text, ints, '.');
+    lx.expect(text, ints, '.');
+    let hi = ex.num_expr(text, ints, fl);
+    if lx.failed(ints) {
+        return 0;
+    }
+    if !ex.whole(lo) || !ex.whole(hi) || hi <= lo {
+        return lx.fail(ints, lx.r_bad_index(), at);
+    }
+    let n = truncate(hi) - truncate(lo);
+    if n > l.maxv() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    if which == 0 {
+        ints[l.sym_lo0(k)] = truncate(lo);
+        ints[l.sym_n0(k)] = n;
+    } else {
+        ints[l.sym_lo1(k)] = truncate(lo);
+        ints[l.sym_n1(k)] = n;
+    }
+    return 0;
+}
+
+fn var_decl[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    let at = lx.skip(text, ints);
+    if !lx.is_ident_start(lx.char_at(text, at)) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    let to = lx.word_end(text, at);
+    let k = declare(text, ints, at, to);
+    if k < 0 {
+        return 0;
+    }
+    ints[l.h_pos()] = to;
+    ints[l.sym_class(k)] = 1;
+    if lx.peek(text, ints) == '[' {
+        ints[l.h_pos()] = ints[l.h_pos()] + 1;
+        ints[l.sym_nd(k)] = 1;
+        dimension(text, ints, fl, at, k, 0);
+        if lx.peek(text, ints) == ',' {
+            ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            ints[l.sym_nd(k)] = 2;
+            dimension(text, ints, fl, at, k, 1);
+        }
+        lx.expect(text, ints, ']');
+    }
+    lx.expect(text, ints, ':');
+    if lx.failed(ints) {
+        return 0;
+    }
+    let size = ints[l.sym_n0(k)] * ints[l.sym_n1(k)];
+    if ints[l.h_nvars()] + size > l.maxv() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    let w = lx.skip(text, ints);
+    let wend = lx.word_end(text, w);
+    var kind = 0 - 1;
+    var lo = 0.0;
+    var hi = 1.0;
+    if lx.word_is(text, w, wend, "bool") {
+        kind = 0;
+        ints[l.h_pos()] = wend;
+    } else if lx.word_is(text, w, wend, "int") || lx.word_is(text, w, wend, "real") {
+        kind = 1;
+        if lx.word_is(text, w, wend, "real") {
+            kind = 2;
+        }
+        ints[l.h_pos()] = wend;
+        let c = lx.peek(text, ints);
+        if lx.is_digit(c) || c == '-' || c == '(' || lx.is_ident_start(c) {
+            lo = ex.num_expr(text, ints, fl);
+            lx.expect(text, ints, '.');
+            lx.expect(text, ints, '.');
+            hi = ex.num_expr(text, ints, fl);
+            if !lx.failed(ints) {
+                if !ex.finite(lo) || !ex.finite(hi) || lo > hi {
+                    return lx.fail(ints, lx.r_bad_bounds(), w);
+                }
+                if kind == 1 && (!ex.whole(lo) || !ex.whole(hi)) {
+                    return lx.fail(ints, lx.r_bad_bounds(), w);
+                }
+            }
+        } else {
+            return lx.fail(ints, lx.r_unbounded(), at);
+        }
+    } else {
+        return lx.fail(ints, lx.r_syntax(), w);
+    }
+    lx.expect(text, ints, ';');
+    if lx.failed(ints) {
+        return 0;
+    }
+    ints[l.sym_kind(k)] = kind;
+    ints[l.sym_base(k)] = ints[l.h_nvars()];
+    ints[l.sym_size(k)] = size;
+    fl[l.sym_lo(k)] = lo;
+    fl[l.sym_hi(k)] = hi;
+    ints[l.h_nvars()] = ints[l.h_nvars()] + size;
+    if kind < 2 {
+        ints[l.h_nints()] = ints[l.h_nints()] + size;
+    }
+    ints[l.h_nsym()] = ints[l.h_nsym()] + 1;
+    return 0;
+}
+
+// One value into the param pool.
+fn pool_push[&a, &b](ints: &!a [int], fl: &!b [float], v: float, at: int) -> [] int {
+    let n = ints[l.h_npool()];
+    if n >= l.maxpool() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    if !ex.finite(v) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    fl[l.pool(n)] = v;
+    ints[l.h_npool()] = n + 1;
+    return 0;
+}
+
+fn param_decl[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    let at = lx.skip(text, ints);
+    if !lx.is_ident_start(lx.char_at(text, at)) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    let to = lx.word_end(text, at);
+    let k = declare(text, ints, at, to);
+    if k < 0 {
+        return 0;
+    }
+    ints[l.h_pos()] = to;
+    lx.expect(text, ints, '=');
+    if lx.failed(ints) {
+        return 0;
+    }
+    let base = ints[l.h_npool()];
+    if lx.peek(text, ints) == '[' {
+        ints[l.h_pos()] = ints[l.h_pos()] + 1;
+        var going = true;
+        while going && !lx.failed(ints) {
+            let v = ex.num_expr(text, ints, fl);
+            pool_push(ints, fl, v, at);
+            if lx.peek(text, ints) == ',' {
+                ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            } else {
+                going = false;
+            }
+        }
+        lx.expect(text, ints, ']');
+        ints[l.sym_class(k)] = 3;
+        ints[l.sym_nd(k)] = 1;
+        ints[l.sym_n0(k)] = ints[l.h_npool()] - base;
+    } else {
+        let v = ex.num_expr(text, ints, fl);
+        pool_push(ints, fl, v, at);
+        ints[l.sym_class(k)] = 2;
+    }
+    lx.expect(text, ints, ';');
+    if lx.failed(ints) {
+        return 0;
+    }
+    ints[l.sym_base(k)] = base;
+    ints[l.sym_size(k)] = ints[l.h_npool()] - base;
+    ints[l.h_nsym()] = ints[l.h_nsym()] + 1;
+    return 0;
+}
+
+// `name :` before an objective or a constraint; leaves the position at the expression and the name in lab_s, lab_e.
+fn label[&s, &a](text: &s [byte], ints: &!a [int]) -> [] int {
+    ints[l.h_lab_s()] = 0;
+    ints[l.h_lab_e()] = 0;
+    let at = lx.skip(text, ints);
+    if lx.is_ident_start(lx.char_at(text, at)) {
+        let to = lx.word_end(text, at);
+        let save = ints[l.h_pos()];
+        ints[l.h_pos()] = to;
+        if lx.peek(text, ints) == ':' && !lx.is_keyword(text, at, to) {
+            ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            ints[l.h_lab_s()] = at;
+            ints[l.h_lab_e()] = to;
+            return 1;
+        }
+        ints[l.h_pos()] = save;
+    }
+    return 0;
+}
+
+fn objective[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], sense: int) -> [] int {
+    let at = lx.skip(text, ints);
+    if ints[l.h_sense()] != 0 {
+        return lx.fail(ints, lx.r_two_objectives(), at);
+    }
+    label(text, ints);
+    let ns = ints[l.h_lab_s()];
+    let ne = ints[l.h_lab_e()];
+    ex.clear_acc(ints, fl);
+    ex.expression(text, ints, fl, 1.0);
+    lx.expect(text, ints, ';');
+    if lx.failed(ints) {
+        return 0;
+    }
+    ex.sort_touched(ints);
+    var n = 0;
+    var k = 0;
+    while k < ints[l.h_ntouched()] {
+        let v = ints[l.touched(k)];
+        let c = fl[l.acc(v)];
+        if c != 0.0 {
+            if !ex.finite(c) {
+                return lx.fail(ints, lx.r_too_large(), at);
+            }
+            ints[l.obj_col(n)] = v;
+            fl[l.obj_coef(n)] = c;
+            n = n + 1;
+        }
+        k = k + 1;
+    }
+    if !ex.finite(fl[l.const(0)]) {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    fl[l.obj_const(0)] = fl[l.const(0)] + 0.0;
+    ints[l.h_sense()] = sense;
+    ints[l.h_obj_nnz()] = n;
+    ints[l.h_obj_ns()] = ns;
+    ints[l.h_obj_ne()] = ne;
+    return 0;
+}
+
+// Stores the accumulated expression as a row: `terms sense rhs`.
+fn push_row[&a, &b](ints: &!a [int], fl: &!b [float], sense: int, ns: int, ne: int, at: int) -> [] int {
+    let row = ints[l.h_ncons()];
+    if row >= l.maxrows() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    ex.sort_touched(ints);
+    var nt = ints[l.h_nrows_terms()];
+    let first = nt;
+    ints[l.row_start(row)] = nt;
+    var k = 0;
+    while k < ints[l.h_ntouched()] {
+        let v = ints[l.touched(k)];
+        let c = fl[l.acc(v)];
+        if c != 0.0 {
+            if !ex.finite(c) || nt >= l.maxnz() {
+                return lx.fail(ints, lx.r_too_large(), at);
+            }
+            ints[l.term_col(nt)] = v;
+            fl[l.term_coef(nt)] = c;
+            nt = nt + 1;
+        }
+        k = k + 1;
+    }
+    let rest = fl[l.const(0)];
+    if !ex.finite(rest) {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    fl[l.row_rhs(row)] = 0.0 - rest + 0.0;
+    ints[l.row_sense(row)] = sense;
+    ints[l.row_ns(row)] = ns;
+    ints[l.row_ne(row)] = ne;
+    var depth = ints[l.h_nlv()];
+    if depth > 4 {
+        depth = 4;
+    }
+    ints[l.row_nidx(row)] = depth;
+    k = 0;
+    while k < depth {
+        let i = truncate(fl[l.lv_val(k)]);
+        if k == 0 {
+            ints[l.row_i0(row)] = i;
+        } else if k == 1 {
+            ints[l.row_i1(row)] = i;
+        } else if k == 2 {
+            ints[l.row_i2(row)] = i;
+        } else {
+            ints[l.row_i3(row)] = i;
+        }
+        k = k + 1;
+    }
+    ints[l.row_start(row + 1)] = nt;
+    ints[l.h_nrows_terms()] = nt;
+    ints[l.h_ncons()] = row + 1;
+    ints[l.h_nnz()] = ints[l.h_nnz()] + (nt - first);
+    return 0;
+}
+
+fn constraint[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    label(text, ints);
+    let ns = ints[l.h_lab_s()];
+    let ne = ints[l.h_lab_e()];
+    ex.clear_acc(ints, fl);
+    ex.expression(text, ints, fl, 1.0);
+    if lx.failed(ints) {
+        return 0;
+    }
+    let at = lx.skip(text, ints);
+    let c = lx.char_at(text, at);
+    var sense = 0 - 1;
+    if lx.char_at(text, at + 1) == '=' {
+        if c == '<' {
+            sense = 0;
+        } else if c == '>' {
+            sense = 1;
+        } else if c == '=' {
+            sense = 2;
+        }
+    }
+    if sense < 0 {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    ints[l.h_pos()] = at + 2;
+    ex.expression(text, ints, fl, -1.0);
+    lx.expect(text, ints, ';');
+    if lx.failed(ints) {
+        return 0;
+    }
+    return push_row(ints, fl, sense, ns, ne, at);
+}
+
+// Just after the next `;`, or the end of the text.
+fn skip_statement[&s](text: &s [byte], from: int) -> [] int {
+    var at = from;
+    while at < len(text) && int_of(text[at]) != ';' {
+        if int_of(text[at]) == '/' && lx.char_at(text, at + 1) == '/' {
+            while at < len(text) && int_of(text[at]) != '\n' {
+                at = at + 1;
+            }
+        } else {
+            at = at + 1;
+        }
+    }
+    if at < len(text) {
+        return at + 1;
+    }
+    return at;
+}
+
+// `forall` at the position, or one constraint.
+fn item[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    let at = lx.skip(text, ints);
+    if lx.is_ident_start(lx.char_at(text, at)) {
+        let to = lx.word_end(text, at);
+        if lx.word_is(text, at, to, "forall") {
+            ints[l.h_pos()] = to;
+            return forall_level(text, ints, fl);
+        }
+    }
+    return constraint(text, ints, fl);
+}
+
+// `NAME in A..B` then `:` and a constraint (or `forall`), or `,` and the next index of the same `forall`.
+fn forall_level[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    let at = lx.skip(text, ints);
+    if !lx.is_ident_start(lx.char_at(text, at)) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    let to = lx.word_end(text, at);
+    if lx.is_keyword(text, at, to) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    if lx.find_sym(text, ints, at, to) >= 0 || lx.find_loop(text, ints, at, to) >= 0 {
+        return lx.fail(ints, lx.r_redeclared(), at);
+    }
+    ints[l.h_pos()] = to;
+    lx.expect_word(text, ints, "in");
+    let lo = ex.num_expr(text, ints, fl);
+    lx.expect(text, ints, '.');
+    lx.expect(text, ints, '.');
+    let hi = ex.num_expr(text, ints, fl);
+    if lx.failed(ints) {
+        return 0;
+    }
+    var nested = false;
+    if lx.peek(text, ints) == ',' {
+        nested = true;
+        ints[l.h_pos()] = ints[l.h_pos()] + 1;
+    } else {
+        lx.expect(text, ints, ':');
+    }
+    if lx.failed(ints) {
+        return 0;
+    }
+    if !ex.whole(lo) || !ex.whole(hi) {
+        return lx.fail(ints, lx.r_bad_index(), at);
+    }
+    let body = lx.skip(text, ints);
+    let body_end = skip_statement(text, body);
+    let depth = ints[l.h_nlv()];
+    if depth >= l.maxlv() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    ints[l.lv_s(depth)] = at;
+    ints[l.lv_e(depth)] = to;
+    ints[l.h_nlv()] = depth + 1;
+    var i = truncate(lo);
+    let stop = truncate(hi);
+    while i < stop && !lx.failed(ints) {
+        ints[l.h_steps()] = ints[l.h_steps()] + 1;
+        if ints[l.h_steps()] > 10000000 {
+            lx.fail(ints, lx.r_too_large(), at);
+        } else {
+            fl[l.lv_val(depth)] = float_of(i);
+            ints[l.h_pos()] = body;
+            if nested {
+                forall_level(text, ints, fl);
+            } else {
+                item(text, ints, fl);
+            }
+        }
+        i = i + 1;
+    }
+    ints[l.h_nlv()] = depth;
+    ints[l.h_pos()] = body_end;
+    return 0;
+}
+
+// Reads the whole model. The caller zeroes both slices first; the verdict is the rule code returned, with its position in the header.
+pub fn check[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] int {
+    var going = true;
+    while going && !lx.failed(ints) {
+        let at = lx.skip(text, ints);
+        if at >= len(text) {
+            going = false;
+        } else if !lx.is_ident_start(lx.char_at(text, at)) {
+            lx.fail(ints, lx.r_syntax(), at);
+        } else {
+            let to = lx.word_end(text, at);
+            ints[l.h_pos()] = to;
+            if lx.word_is(text, at, to, "var") {
+                var_decl(text, ints, fl);
+            } else if lx.word_is(text, at, to, "param") {
+                param_decl(text, ints, fl);
+            } else if lx.word_is(text, at, to, "minimize") {
+                objective(text, ints, fl, 1);
+            } else if lx.word_is(text, at, to, "maximize") {
+                objective(text, ints, fl, 2);
+            } else if lx.word_is(text, at, to, "subject") {
+                lx.expect_word(text, ints, "to");
+                var more = !lx.failed(ints);
+                while more && !lx.failed(ints) {
+                    let s = lx.skip(text, ints);
+                    if s >= len(text) {
+                        more = false;
+                    } else if lx.is_ident_start(lx.char_at(text, s)) && lx.starts_statement(text, s, lx.word_end(text, s)) {
+                        more = false;
+                    } else {
+                        item(text, ints, fl);
+                    }
+                }
+            } else {
+                lx.fail(ints, lx.r_syntax(), at);
+            }
+        }
+    }
+    return ints[l.h_rule()];
+}

@@ -1,0 +1,475 @@
+edition 7;
+
+module solve.expr;
+
+// Expressions of the `.sol` language (docs/design.md sections 2.1 and 12): linear forms over the variables, with params, loop indices and `sum`.
+//
+// A linear expression is accumulated into `fl[acc(v)]` and `fl[const(0)]`; the variables touched are listed in `ints[touched(k)]` so that clearing and reading cost
+// what the expression holds, not what the model holds. A constant expression (a range, an index, a bound, a number group) is the same code run with `numeric` set:
+// a variable there is `solve.not-constant`, and the value is left in the constant cell.
+
+import solve.layout as l;
+import solve.lex as lx;
+
+// ------------------------------------------------------------ accumulator ---
+
+pub fn clear_acc[&a, &b](ints: &!a [int], fl: &!b [float]) -> [] int {
+    var k = 0;
+    while k < ints[l.h_ntouched()] {
+        let v = ints[l.touched(k)];
+        fl[l.acc(v)] = 0.0;
+        ints[l.flag(v)] = 0;
+        k = k + 1;
+    }
+    ints[l.h_ntouched()] = 0;
+    fl[l.const(0)] = 0.0;
+    return 0;
+}
+
+fn add_term[&a, &b](ints: &!a [int], fl: &!b [float], v: int, c: float) -> [] int {
+    if ints[l.flag(v)] == 0 {
+        ints[l.flag(v)] = 1;
+        let n = ints[l.h_ntouched()];
+        ints[l.touched(n)] = v;
+        ints[l.h_ntouched()] = n + 1;
+    }
+    fl[l.acc(v)] = fl[l.acc(v)] + c;
+    return 0;
+}
+
+// The touched variables in increasing order (a shell sort: rows may be dense).
+pub fn sort_touched[&a](ints: &!a [int]) -> [] int {
+    let n = ints[l.h_ntouched()];
+    var gap = n / 2;
+    while gap > 0 {
+        var i = gap;
+        while i < n {
+            let t = ints[l.touched(i)];
+            var j = i;
+            while j >= gap && ints[l.touched(j - gap)] > t {
+                ints[l.touched(j)] = ints[l.touched(j - gap)];
+                j = j - gap;
+            }
+            ints[l.touched(j)] = t;
+            i = i + 1;
+        }
+        gap = gap / 2;
+    }
+    return 0;
+}
+
+// Not NaN and not infinite.
+pub fn finite(x: float) -> [] bool {
+    return x - x == 0.0;
+}
+
+// A whole number small enough to be an index.
+pub fn whole(x: float) -> [] bool {
+    return x >= -1e15 && x <= 1e15 && x == float_of(truncate(x));
+}
+
+// ---------------------------------------------------------------- scanning ---
+
+// Where the term that starts at `from` ends: at a `+`, `-`, `;`, `,`, a relation or an unmatched `)` or `]`, outside brackets.
+// A `sum` inside the term has its own header (`sum i in A..B:`) that is passed over whole, so the `-` of `0..n-1` does not end the term.
+pub fn skip_term[&s](text: &s [byte], from: int) -> [] int {
+    var at = from;
+    var depth = 0;
+    var going = true;
+    var first = true;
+    while going && at < len(text) {
+        let c = int_of(text[at]);
+        if first && (c == ' ' || c == '\n' || c == '\t' || c == '\r') {
+            at = at + 1;
+        } else if first && (c == '-' || c == '+') {
+            at = at + 1;
+            first = false;
+        } else if c == '(' || c == '[' {
+            depth = depth + 1;
+            at = at + 1;
+            first = false;
+        } else if c == ')' || c == ']' {
+            if depth == 0 {
+                going = false;
+            } else {
+                depth = depth - 1;
+                at = at + 1;
+            }
+            first = false;
+        } else if depth == 0 && (c == ';' || c == '<' || c == '>' || c == '=' || c == ',' || c == '+' || c == '-') {
+            going = false;
+        } else if c == '/' && lx.char_at(text, at + 1) == '/' {
+            while at < len(text) && int_of(text[at]) != '\n' {
+                at = at + 1;
+            }
+        } else if lx.is_digit(c) {
+            first = false;
+            while at < len(text) && (lx.is_digit(int_of(text[at])) || int_of(text[at]) == '.' && lx.is_digit(lx.char_at(text, at + 1))) {
+                at = at + 1;
+            }
+            let e = lx.char_at(text, at);
+            if e == 'e' || e == 'E' {
+                var q = at + 1;
+                if lx.char_at(text, q) == '-' || lx.char_at(text, q) == '+' {
+                    q = q + 1;
+                }
+                if lx.is_digit(lx.char_at(text, q)) {
+                    while lx.is_digit(lx.char_at(text, q)) {
+                        q = q + 1;
+                    }
+                    at = q;
+                }
+            }
+        } else if lx.is_ident_start(c) {
+            first = false;
+            let e = lx.word_end(text, at);
+            if lx.word_is(text, at, e, "sum") {
+                at = e;
+                while at < len(text) && int_of(text[at]) != ':' && int_of(text[at]) != ';' {
+                    at = at + 1;
+                }
+                if at < len(text) && int_of(text[at]) == ':' {
+                    at = at + 1;
+                }
+                first = true;
+            } else {
+                at = e;
+            }
+        } else {
+            first = false;
+            at = at + 1;
+        }
+    }
+    return at;
+}
+
+// Does text[from..to] name a variable?
+fn has_var[&s, &a](text: &s [byte], ints: &!a [int], from: int, to: int) -> [] bool {
+    var i = from;
+    while i < to {
+        let c = int_of(text[i]);
+        if lx.is_digit(c) {
+            while i < to && (lx.is_digit(int_of(text[i])) || int_of(text[i]) == '.') {
+                i = i + 1;
+            }
+            if i < to && (int_of(text[i]) == 'e' || int_of(text[i]) == 'E') {
+                i = i + 1;
+                if i < to && (int_of(text[i]) == '-' || int_of(text[i]) == '+') {
+                    i = i + 1;
+                }
+                while i < to && lx.is_digit(int_of(text[i])) {
+                    i = i + 1;
+                }
+            }
+        } else if lx.is_ident_start(c) {
+            let e = lx.word_end(text, i);
+            let k = lx.find_sym(text, ints, i, e);
+            if k >= 0 && ints[l.sym_class(k)] == 1 {
+                return true;
+            }
+            i = e;
+        } else {
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+// ------------------------------------------------------------ expressions ---
+
+// A constant expression's value. The position ends after it.
+pub fn num_expr[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float]) -> [] float {
+    let saved_mode = ints[l.h_numeric()];
+    let saved_const = fl[l.const(0)];
+    ints[l.h_numeric()] = 1;
+    fl[l.const(0)] = 0.0;
+    expression(text, ints, fl, 1.0);
+    let v = fl[l.const(0)];
+    fl[l.const(0)] = saved_const;
+    ints[l.h_numeric()] = saved_mode;
+    return v;
+}
+
+// After a name, its subscripts `[i]` or `[i, j]`: the offset of the element inside the declared name, or -1 (a refusal has been recorded).
+// `at` is where the name began, for the refusal.
+fn element[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], k: int, at: int) -> [] int {
+    let nd = ints[l.sym_nd(k)];
+    let c = lx.peek(text, ints);
+    if nd == 0 {
+        if c == '[' {
+            lx.fail(ints, lx.r_bad_index(), at);
+            return 0 - 1;
+        }
+        return 0;
+    }
+    if c != '[' {
+        lx.fail(ints, lx.r_bad_index(), at);
+        return 0 - 1;
+    }
+    ints[l.h_pos()] = ints[l.h_pos()] + 1;
+    let a = num_expr(text, ints, fl);
+    var b = 0.0;
+    let d = lx.peek(text, ints);
+    if nd == 2 {
+        if d == ',' {
+            ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            b = num_expr(text, ints, fl);
+        } else {
+            lx.fail(ints, lx.r_bad_index(), at);
+        }
+    } else if d == ',' {
+        lx.fail(ints, lx.r_bad_index(), at);
+    }
+    lx.expect(text, ints, ']');
+    if lx.failed(ints) {
+        return 0 - 1;
+    }
+    if !whole(a) || !whole(b) {
+        lx.fail(ints, lx.r_bad_index(), at);
+        return 0 - 1;
+    }
+    let i = truncate(a) - ints[l.sym_lo0(k)];
+    if i < 0 || i >= ints[l.sym_n0(k)] {
+        lx.fail(ints, lx.r_bad_index(), at);
+        return 0 - 1;
+    }
+    if nd == 1 {
+        return i;
+    }
+    let j = truncate(b) - ints[l.sym_lo1(k)];
+    if j < 0 || j >= ints[l.sym_n1(k)] {
+        lx.fail(ints, lx.r_bad_index(), at);
+        return 0 - 1;
+    }
+    return i * ints[l.sym_n1(k)] + j;
+}
+
+// One more numeric factor of a term: `prod` times (or over) x.
+fn apply[&a](ints: &!a [int], prod: float, pending: int, x: float, at: int) -> [] float {
+    if pending == '/' {
+        if x == 0.0 {
+            lx.fail(ints, lx.r_divide_by_zero(), at);
+            return prod;
+        }
+        return prod / x;
+    }
+    return prod * x;
+}
+
+// One term: factors joined by `*` and `/`. At most one of them may be a variable or a group that holds one; the rest are numbers.
+// The term adds `mult` times itself into the accumulator. A `sum` is a term of its own and may only start one.
+pub fn term[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], mult0: float) -> [] int {
+    var mult = mult0;
+    let start = lx.skip(text, ints);
+    let c0 = lx.char_at(text, start);
+    if c0 == '-' {
+        mult = 0.0 - mult;
+        ints[l.h_pos()] = start + 1;
+    } else if c0 == '+' {
+        ints[l.h_pos()] = start + 1;
+    }
+    let first = lx.skip(text, ints);
+    if lx.is_ident_start(lx.char_at(text, first)) {
+        if lx.word_is(text, first, lx.word_end(text, first), "sum") {
+            return sum_term(text, ints, fl, mult, first);
+        }
+    }
+    var prod = 1.0;
+    var vars = 0;
+    var groups = 0;
+    var which = 0 - 1;
+    var group_from = 0;
+    var group_to = 0;
+    var pending = '*';
+    var going = true;
+    while going && !lx.failed(ints) {
+        let at = lx.skip(text, ints);
+        let c = lx.char_at(text, at);
+        if lx.is_digit(c) {
+            let v = lx.parse_number(text, ints);
+            prod = apply(ints, prod, pending, v, at);
+        } else if lx.is_ident_start(c) {
+            let to = lx.word_end(text, at);
+            ints[l.h_pos()] = to;
+            if lx.is_reserved(text, at, to) {
+                lx.fail(ints, lx.r_not_built(), at);
+            } else if lx.is_keyword(text, at, to) {
+                lx.fail(ints, lx.r_syntax(), at);
+            } else {
+                let lp = lx.find_loop(text, ints, at, to);
+                let k = lx.find_sym(text, ints, at, to);
+                if lp >= 0 {
+                    prod = apply(ints, prod, pending, fl[l.lv_val(lp)], at);
+                } else if k < 0 {
+                    lx.fail(ints, lx.r_undeclared(), at);
+                } else if ints[l.sym_class(k)] == 2 {
+                    prod = apply(ints, prod, pending, fl[l.pool(ints[l.sym_base(k)])], at);
+                } else if ints[l.sym_class(k)] == 3 {
+                    let off = element(text, ints, fl, k, at);
+                    if off >= 0 {
+                        prod = apply(ints, prod, pending, fl[l.pool(ints[l.sym_base(k)] + off)], at);
+                    }
+                } else if ints[l.h_numeric()] == 1 {
+                    lx.fail(ints, lx.r_not_constant(), at);
+                } else {
+                    let off = element(text, ints, fl, k, at);
+                    if off >= 0 {
+                        if pending == '/' {
+                            lx.fail(ints, lx.r_nonlinear(), at);
+                        }
+                        vars = vars + 1;
+                        which = ints[l.sym_base(k)] + off;
+                    }
+                }
+            }
+        } else if c == '(' {
+            var depth = 1;
+            var q = at + 1;
+            while q < len(text) && depth > 0 {
+                let d = int_of(text[q]);
+                if d == '(' {
+                    depth = depth + 1;
+                } else if d == ')' {
+                    depth = depth - 1;
+                }
+                q = q + 1;
+            }
+            if depth != 0 {
+                lx.fail(ints, lx.r_syntax(), at);
+            } else if ints[l.h_numeric()] == 1 || !has_var(text, ints, at + 1, q - 1) {
+                ints[l.h_pos()] = at + 1;
+                let g = num_expr(text, ints, fl);
+                if !lx.failed(ints) {
+                    let stop = lx.skip(text, ints);
+                    if stop != q - 1 {
+                        lx.fail(ints, lx.r_syntax(), stop);
+                    }
+                }
+                ints[l.h_pos()] = q;
+                prod = apply(ints, prod, pending, g, at);
+            } else {
+                if pending == '/' {
+                    lx.fail(ints, lx.r_nonlinear(), at);
+                }
+                groups = groups + 1;
+                group_from = at + 1;
+                group_to = q - 1;
+                ints[l.h_pos()] = q;
+            }
+        } else {
+            lx.fail(ints, lx.r_syntax(), at);
+        }
+        if !lx.failed(ints) {
+            let n = lx.peek(text, ints);
+            if n == '*' || n == '/' {
+                pending = n;
+                ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            } else {
+                going = false;
+            }
+        }
+    }
+    if lx.failed(ints) {
+        return 0;
+    }
+    if vars + groups > 1 {
+        lx.fail(ints, lx.r_nonlinear(), first);
+        return 0;
+    }
+    if vars == 1 {
+        add_term(ints, fl, which, mult * prod);
+    } else if groups == 1 {
+        let after = ints[l.h_pos()];
+        ints[l.h_pos()] = group_from;
+        expression(text, ints, fl, mult * prod);
+        if !lx.failed(ints) {
+            let stop = lx.skip(text, ints);
+            if stop != group_to {
+                lx.fail(ints, lx.r_syntax(), stop);
+            }
+        }
+        ints[l.h_pos()] = after;
+    } else {
+        fl[l.const(0)] = fl[l.const(0)] + mult * prod;
+    }
+    return 0;
+}
+
+// `sum i in A..B: TERM`, the position at the word `sum`.
+fn sum_term[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], mult: float, sum_at: int) -> [] int {
+    ints[l.h_pos()] = sum_at + 3;
+    let at = lx.skip(text, ints);
+    if !lx.is_ident_start(lx.char_at(text, at)) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    let to = lx.word_end(text, at);
+    if lx.is_keyword(text, at, to) {
+        return lx.fail(ints, lx.r_syntax(), at);
+    }
+    if lx.find_sym(text, ints, at, to) >= 0 || lx.find_loop(text, ints, at, to) >= 0 {
+        return lx.fail(ints, lx.r_redeclared(), at);
+    }
+    ints[l.h_pos()] = to;
+    lx.expect_word(text, ints, "in");
+    let lo = num_expr(text, ints, fl);
+    lx.expect(text, ints, '.');
+    lx.expect(text, ints, '.');
+    let hi = num_expr(text, ints, fl);
+    lx.expect(text, ints, ':');
+    if lx.failed(ints) {
+        return 0;
+    }
+    if !whole(lo) || !whole(hi) {
+        return lx.fail(ints, lx.r_bad_index(), at);
+    }
+    let body = lx.skip(text, ints);
+    let body_end = skip_term(text, body);
+    if body_end <= body {
+        return lx.fail(ints, lx.r_syntax(), body);
+    }
+    let depth = ints[l.h_nlv()];
+    if depth >= l.maxlv() {
+        return lx.fail(ints, lx.r_too_large(), at);
+    }
+    ints[l.lv_s(depth)] = at;
+    ints[l.lv_e(depth)] = to;
+    ints[l.h_nlv()] = depth + 1;
+    var i = truncate(lo);
+    let stop = truncate(hi);
+    while i < stop && !lx.failed(ints) {
+        ints[l.h_steps()] = ints[l.h_steps()] + 1;
+        if ints[l.h_steps()] > 10000000 {
+            lx.fail(ints, lx.r_too_large(), at);
+        } else {
+            fl[l.lv_val(depth)] = float_of(i);
+            ints[l.h_pos()] = body;
+            term(text, ints, fl, mult);
+        }
+        i = i + 1;
+    }
+    ints[l.h_nlv()] = depth;
+    ints[l.h_pos()] = body_end;
+    return 0;
+}
+
+// Terms joined by `+` and `-`, the first possibly signed. Stops at the first token that is not one of them.
+pub fn expression[&s, &a, &b](text: &s [byte], ints: &!a [int], fl: &!b [float], mult: float) -> [] int {
+    term(text, ints, fl, mult);
+    var going = !lx.failed(ints);
+    while going {
+        let c = lx.peek(text, ints);
+        if c == '+' {
+            ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            term(text, ints, fl, mult);
+        } else if c == '-' {
+            ints[l.h_pos()] = ints[l.h_pos()] + 1;
+            term(text, ints, fl, 0.0 - mult);
+        } else {
+            going = false;
+        }
+        if lx.failed(ints) {
+            going = false;
+        }
+    }
+    return 0;
+}
