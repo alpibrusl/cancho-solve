@@ -1224,10 +1224,14 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                                 let np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
                                                 found = found + np;
                                                 var taken = 0;
-                                                var pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np);
+                                                var pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np, taken);
                                                 while pick >= 0 && taken < 300 {
-                                                    taken = taken + cm.append(ints2, fl2, siv, sfv, n, nnzcap, mcap, pick);
-                                                    pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np);
+                                                    let ok = cm.append(ints2, fl2, siv, sfv, n, nnzcap, mcap, pick);
+                                                    if ok == 1 {
+                                                        cm.note_taken(siv, n, nnzcap, taken, pick);
+                                                        taken = taken + 1;
+                                                    }
+                                                    pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np, taken);
                                                 }
                                                 if taken == 0 {
                                                     go = false;

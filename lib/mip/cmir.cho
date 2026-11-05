@@ -30,7 +30,7 @@ pub fn pnnz() -> [] int {
 }
 
 pub fn si_len(n: int, nnzcap: int) -> [] int {
-    return 9 * n + 8 + 2 * nnzcap + 16 + pcut() + 2 + pnnz() + 16;
+    return 9 * n + 8 + 2 * nnzcap + 16 + 320 + pcut() + 2 + pnnz() + 16;
 }
 
 pub fn sf_len(n: int, mcap: int) -> [] int {
@@ -76,8 +76,12 @@ fn o_used(n: int, nnzcap: int) -> [] int {
     return 8 * n + 1 + n + 2 * nnzcap;
 }
 
-fn o_ps(n: int, nnzcap: int) -> [] int {
+fn o_taken(n: int, nnzcap: int) -> [] int {
     return o_used(n, nnzcap) + 16;
+}
+
+fn o_ps(n: int, nnzcap: int) -> [] int {
+    return o_taken(n, nnzcap) + 320;
 }
 
 fn o_pc(n: int, nnzcap: int) -> [] int {
@@ -751,27 +755,73 @@ pub fn separate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], si: &!c [int
     return npool;
 }
 
-// The index (0-based) of the pool's cut with the greatest efficacy among those not yet taken (taken ones carry -1), or -1.
-pub fn best_cut[&c, &d](si: &c [int], sf: &!d [float], n: int, nnzcap: int, mcap: int, npool: int) -> [] int {
-    var best = 0 - 1;
-    var be = 0.0;
-    var k = 0;
+// The index of the pool's cut with the greatest efficacy among those not yet looked at (looked-at ones carry -1), skipping a cut that is nearly parallel (cosine over 0.9 in absolute value)
+// to one of the `ntaken` cuts already taken this round (their pool indices are in the scratch); -1 when none is left.
+pub fn best_cut[&c, &d](si: &!c [int], sf: &!d [float], n: int, nnzcap: int, mcap: int, npool: int, ntaken: int) -> [] int {
     let pe = o_peff(n, mcap);
-    while k < npool {
-        if sf[pe + k] > be {
-            be = sf[pe + k];
-            best = k;
+    let ps = o_ps(n, nnzcap);
+    let pc = o_pc(n, nnzcap);
+    let pf = o_pf(n, mcap);
+    let tk = o_taken(n, nnzcap);
+    var found = 0 - 1;
+    while found < 0 {
+        var best = 0 - 1;
+        var be = 0.0;
+        var k = 0;
+        while k < npool {
+            if sf[pe + k] > be {
+                be = sf[pe + k];
+                best = k;
+            }
+            k = k + 1;
         }
-        k = k + 1;
-    }
-    if best >= 0 {
-        // mark taken by negating the efficacy to -1 once the caller has copied it
+        if best < 0 {
+            return 0 - 1;
+        }
         sf[pe + best] = 0.0 - 1.0;
+        // dense copy of the candidate
+        var nb = 0.0;
+        var t = si[ps + best];
+        while t < si[ps + best + 1] {
+            sf[6 * n + si[pc + t]] = sf[pf + t];
+            nb = nb + sf[pf + t] * sf[pf + t];
+            t = t + 1;
+        }
+        var par = false;
+        var q = 0;
+        while q < ntaken && !par {
+            let o = si[tk + q];
+            var dot = 0.0;
+            var na = 0.0;
+            var u = si[ps + o];
+            while u < si[ps + o + 1] {
+                dot = dot + sf[pf + u] * sf[6 * n + si[pc + u]];
+                na = na + sf[pf + u] * sf[pf + u];
+                u = u + 1;
+            }
+            if dot * dot > 0.81 * na * nb {
+                par = true;
+            }
+            q = q + 1;
+        }
+        t = si[ps + best];
+        while t < si[ps + best + 1] {
+            sf[6 * n + si[pc + t]] = 0.0;
+            t = t + 1;
+        }
+        if !par {
+            found = best;
+        }
     }
-    return best;
+    return found;
 }
 
 // Appends pool cut k as a `<=` row at the end of the model (ints2, fl2); returns 1 when it fitted (rows and nonzeros under the layout's limits), else 0.
+pub fn note_taken[&a](si: &!a [int], n: int, nnzcap: int, ntaken: int, k: int) -> [] int {
+    si[o_taken(n, nnzcap) + ntaken] = k;
+    return 0;
+}
+
 pub fn append[&b, &c, &d, &e](ints2: &!b [int], fl2: &!c [float], si: &d [int], sf: &e [float], n: int, nnzcap: int, mcap: int, k: int) -> [] int {
     let ps = o_ps(n, nnzcap);
     let pc = o_pc(n, nnzcap);

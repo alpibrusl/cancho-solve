@@ -49,6 +49,9 @@ MUTANTS = [
     (C, "if rhs - act <= 1e-6 * (1.0 + mag(rhs)) {", "if act - rhs <= 1e-6 * (1.0 + mag(rhs)) {", "the cut rows that are kept are the ones that are slack"),
     (C, "    ints2[l.h_ncons()] = w;\n    ints2[l.h_nnz()] = nnz;\n    return w - m0;", "    return w - m0;", "the purge does not shorten the model"),
     (C, "if sf[pe + k] > be {", "if sf[pe + k] < be {", "the least efficacious cut is taken first"),
+    (C, "            if dot * dot > 0.81 * na * nb {", "            if dot * dot > 1.81 * na * nb {", "(equivalent in effect) parallel cuts are never skipped: a weaker selection, the same answers"),
+    (C, "            if dot * dot > 0.81 * na * nb {", "            if dot * dot > 0.0 * na * nb {", "every cut after the first is skipped as parallel"),
+    (C, "        sf[pe + best] = 0.0 - 1.0;\n        // dense copy", "        // dense copy", "a cut that was looked at is looked at again (the selection does not end)"),
     # the rounds
     (M, "taken < 300", "taken < 1", "one cut per round"),
     (M, "round < 300 && stall < 150", "round < 300 && stall < 3", "the rounds stop after three without a lift"),
