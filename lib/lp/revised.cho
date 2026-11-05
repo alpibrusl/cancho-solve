@@ -1331,6 +1331,33 @@ pub fn ws_load[&a, &b, &c, &d, &e, &f](ints: &a [int], fl: &b [float], wi: &!c [
     return refactor(wi, wf, fi, ff);
 }
 
+// The grown model (the old one with rows appended, nothing else changed) from the optimal state of the old one (design.md 22.3): the status, the nonbasic values and the weights of the columns
+// the old state had are copied by the offsets of its own header, the new rows' logicals are basic at their rows (setup put them there, with weight 1), and the basis is factorised.
+// The old basis is dual feasible for the grown model and primal infeasible only at violated new rows. `owi`/`owf` must not be `wi`/`wf`. 0, or 4/5.
+pub fn ws_load_warm[&a, &b, &c, &d, &e, &f, &g, &h](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float], fi: &!e [int], ff: &!f [float], owi: &g [int], owf: &h [float]) -> [] int {
+    setup(ints, fl, wi, wf);
+    let n = wi[1];
+    let mo = owi[0];
+    var c = 0;
+    while c < n + mo {
+        wi[wi[9] + c] = owi[owi[9] + c];
+        wi[wi[10] + c] = owi[owi[10] + c];
+        wf[wi[18] + c] = owf[owi[18] + c];
+        c = c + 1;
+    }
+    var i = 0;
+    while i < mo {
+        wi[wi[8] + i] = owi[owi[8] + i];
+        wf[wi[21] + i] = owf[owi[21] + i];
+        i = i + 1;
+    }
+    wi[42] = ws_interval();
+    let m = wi[0];
+    sp.init(fi, m, ws_pool(m, wi[3]), ws_interval() + 1, ws_interval() * m + 16);
+    wi[32] = 0;
+    return refactor(wi, wf, fi, ff);
+}
+
 // The dual simplex from the current state. Codes as `solve`, and 4 (numerical) / 5 (pool). `stats[0]` is the iterations of this call.
 pub fn ws_run[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float], stats: &!e [int], limit: int) -> [] int {
     return iterate(wi, wf, fi, ff, stats, limit);

@@ -32,7 +32,7 @@ EXACT_DENSE = {
     ('bin packing 8/4', 'depth+fractional'): (73, 316),
     ('bin packing 8/4', 'best+fractional'): (73, 316),
     ('bin packing 8/4', 'depth+pseudo'): (21, 62),
-    ('bin packing 8/4', 'whole-cut off'): (611, 2755),
+    ('bin packing 8/4', 'whole-cut off'): (301, 863),   # was (611, 2755) before the warm cut rounds and their cold retries, design.md 22.3
     ('bin packing 8/4', 'no rounding'): (25, 70),
     ('bin packing 8/4', 'far child'): (7, 47),
     ('knapsack 100', 'default'): (490, 530),
@@ -85,7 +85,7 @@ EXACT_SPARSE = {
     ('bin packing 8/4', 'depth+fractional'): (29, 117),
     ('bin packing 8/4', 'best+fractional'): (29, 117),
     ('bin packing 8/4', 'depth+pseudo'): (65, 217),
-    ('bin packing 8/4', 'whole-cut off'): (683, 2872),
+    ('bin packing 8/4', 'whole-cut off'): (301, 962),   # was (683, 2872) before the warm cut rounds and their cold retries, design.md 22.3
     ('bin packing 8/4', 'no rounding'): (74, 233),
     ('bin packing 8/4', 'far child'): (2, 23),
     ('knapsack 100', 'default'): (490, 530),

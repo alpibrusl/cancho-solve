@@ -65,6 +65,11 @@ pub fn load[&a, &b, &c, &d, &e, &f](eng: int, ints: &a [int], fl: &b [float], w:
     return sx.init_state(ints, fl, w, wi, m, n);
 }
 
+// The sparse engine only: the model with rows appended, from the optimal state (ow, owi) of the model without them (design.md 22.3). 0, or 4/5.
+pub fn load_warm[&a, &b, &c, &d, &e, &f, &g, &h](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], ow: &g [float], owi: &h [int]) -> [] int {
+    return rv.ws_load_warm(ints, fl, wi, w, fi, ff, owi, ow);
+}
+
 // Iterations of this call go to stats[0]. Result codes: simplex.s_optimal, s_infeasible, s_limit, and for the sparse engine 4 (numerical) and 5 (pool).
 pub fn run[&c, &d, &e, &f, &g](eng: int, w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], stats: &!g [int], m: int, n: int, limit: int) -> [] int {
     if eng == 1 {

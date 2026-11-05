@@ -82,7 +82,7 @@ for seed in range(1, 9):
     validity(f"set cover seed {seed}", lpgen.set_cover(seed, 20 + seed * 3, 30 + seed * 4, 0.1))
 if len(skipped) > 6:
     fails.append(f"{len(skipped)} instances ran into the node limit: {skipped}")
-EXPECTED_FOUND, EXPECTED_KEPT = 13853, 2174     # measured once (python3 scripts/check_mir.py --print): cuts found and kept by the eager rounds on the validity instances, held exactly
+EXPECTED_FOUND, EXPECTED_KEPT = 25859, 1333     # measured once (python3 scripts/check_mir.py --print; re-measured on purpose for the warm cut rounds of design.md 22.3, was 13853 and 2174; 7061 and 1582 before the cold retries): cuts found and kept by the eager rounds on the validity instances, held exactly
 if "--print" not in sys.argv and (FOUND, KEPT) != (EXPECTED_FOUND, EXPECTED_KEPT):
     fails.append(f"the eager rounds found {FOUND} cuts and kept {KEPT} on the validity instances (exactly {EXPECTED_FOUND} and {EXPECTED_KEPT} expected)")
 if FOUND == 0:

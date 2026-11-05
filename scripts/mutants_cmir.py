@@ -54,8 +54,8 @@ MUTANTS = [
     (C, "        sf[pe + best] = 0.0 - 1.0;\n        // dense copy", "        // dense copy", "a cut that was looked at is looked at again (the selection does not end)"),
     # the rounds
     (M, "taken < 300", "taken < 1", "one cut per round"),
-    (M, "round < 300 && stall < 150", "round < 300 && stall < 3", "the rounds stop after three without a lift"),
-    (M, "round < 300 && stall < 150", "round < 2 && stall < 150", "two rounds"),
+    (M, "round + 1 >= 300 || stall >= 150", "round + 1 >= 300 || stall >= 3", "the rounds stop after three without a lift"),
+    (M, "round + 1 >= 300 || stall >= 150", "round + 1 >= 2 || stall >= 150", "two rounds"),
     (M, "if round > 0 && fv[1] <= last + 1e-9 * (1.0 + mag(last)) {", "if round > 0 {", "every round after the first counts as stalled"),
     (M, "kept = cm.purge(ints2, fl2, xv, m0);", "kept = ints2[l.h_ncons()] - m0;", "the purge is skipped"),
     # the driver
