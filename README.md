@@ -44,3 +44,5 @@ python3 scripts/gen_layout.py --check # lib/model/layout.cho is what the generat
 ```
 
 Authority: the binary reads standard input and writes standard output and error; it reads no file and has no network. Licence EUPL-1.2, copyright Alpibru S.L.
+
+**Sparse revised dual simplex (S2b, `docs/design.md` sections 18.3 to 18.4).** `solve run --method dense|sparse|auto` (default `auto`: the sparse method when the matrix is at most 4% full or the tableau would not fit, the dense tableau otherwise). The sparse method is an LU-factorised revised dual simplex with the same long step and steepest-edge pricing; on generated network LPs it is 2.5x to 3.7x faster per iteration than the tableau and 0.4x to 1.5x CLP's time on transportation and assignment, solves min-cost flows of 8,000 rows that the tableau refuses (1.5 s; CLP takes 0.11 s), and is 1.4x to 2.4x slower than the tableau on dense LPs. One machine, generated models only.
