@@ -1,0 +1,9 @@
+# cancho-solve
+
+> Linear and mixed-integer models as a command line: a checked text model in, JSON out; refusals carry a rule tag and a repair; `solve verify` re-checks a claimed answer without the search.
+
+- [Landing page](https://alpibrusl.github.io/cancho-solve/index.html)
+- [Examples](https://alpibrusl.github.io/cancho-solve/examples.html)
+- [Stories](https://alpibrusl.github.io/cancho-solve/stories.html)
+- [For agents (agents.md)](https://alpibrusl.github.io/cancho-solve/agents.md)
+- [Design](https://github.com/alpibrusl/cancho-solve/blob/main/docs/design.md)
