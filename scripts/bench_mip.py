@@ -48,6 +48,18 @@ INSTANCES = [
     ("bin packing", "20 items, 10 bins", lambda: lpgen.bin_packing_lite(7, 20, 10)),
 ]
 
+if "--extra" in args:
+    INSTANCES = [
+        ("mkp", "100 x 30", lambda: lpgen.mkp(7, 100, 30)),
+        ("mkp", "250 x 25", lambda: lpgen.mkp(7, 250, 25)),
+        ("set cover", "1000 rows, 1500 sets", lambda: lpgen.set_cover(7, 1000, 1500, 0.01)),
+        ("set cover", "600 rows, 600 sets, dense", lambda: lpgen.set_cover(7, 600, 600, 0.04)),
+        ("general int", "60 x 60", lambda: lpgen.random_mip(7, 60, 60, 0.2, 1.0)),
+        ("mixed", "60 x 80", lambda: lpgen.random_mip(7, 60, 80, 0.2, 0.5)),
+        ("bin packing", "30 items, 12 bins", lambda: lpgen.bin_packing_lite(7, 30, 12)),
+        ("knapsack", "5000 items", lambda: lpgen.knapsack(7, 5000)),
+    ]
+
 def ours(text, extra=(), timeout=LIMIT):
     best = None
     out = None
@@ -76,8 +88,10 @@ def scip(model):
     (sc.Minimize if ob["sense"] == "minimize" else sc.Maximize)(e)
     sc.SetTimeLimit(int(LIMIT * 1000))
     sc.SetNumThreads(1)
+    prm = pywraplp.MPSolverParameters()
+    prm.SetDoubleParam(prm.RELATIVE_MIP_GAP, 0.0)  # pywraplp's default is 1e-4; ours proves optimality, so SCIP is asked to as well
     t = time.perf_counter()
-    st = sc.Solve()
+    st = sc.Solve(prm)
     dt = time.perf_counter() - t
     return ("optimal" if st == pywraplp.Solver.OPTIMAL else "limit/other"), (sc.Objective().Value() if st in (0, 1) else None), dt, sc.nodes()
 

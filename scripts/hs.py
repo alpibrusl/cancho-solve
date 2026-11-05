@@ -83,7 +83,9 @@ def highs_mip(model, time_limit=None):
     if A_eq is not None:
         cons.append(LinearConstraint(A_eq, b_eq, b_eq))
     integ = np.array([0 if v["kind"] == "real" else 1 for v in model["variables"]])
-    opts = {} if time_limit is None else {"time_limit": time_limit}
+    opts = {"mip_rel_gap": 0.0}  # HiGHS stops at a relative gap of 1e-4 by default; ours proves optimality, so the oracle is asked to as well
+    if time_limit is not None:
+        opts["time_limit"] = time_limit
     t = time.perf_counter()
     res = milp(c, constraints=cons, integrality=integ, bounds=Bounds([b[0] for b in bounds], [b[1] for b in bounds]), options=opts)
     dt = time.perf_counter() - t
