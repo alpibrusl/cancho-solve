@@ -50,6 +50,12 @@ MUTANTS = [
     ("lib/lp/simplex.cho", "delta = slope;", "delta = delta + 0.0;", "the slope is not carried to the next column"),
     ("lib/lp/simplex.cho", "w[o_v + wi[i]] = w[o_v + wi[i]] - w[i * big + cj] * dx;", "w[o_v + wi[i]] = w[o_v + wi[i]] + w[i * big + cj] * dx;", "the basic values take a flip with the wrong sign"),
     ("lib/lp/simplex.cho", "if slope <= 1e-9 * (1.0 + worst) {", "if slope <= 0.5 * (1.0 + worst) {", "a loose slope tolerance enters too early"),
+    # the steepest-edge pricing (design.md section 17.2); only gate 5 can see these
+    ("lib/lp/simplex.cho", "let sc = viol * viol / w[o_w + i];", "let sc = viol / w[o_w + i];", "the violation is not squared in the price"),
+    ("lib/lp/simplex.cho", "let sc = viol * viol / w[o_w + i];", "let sc = viol * viol;", "the price ignores the weights"),
+    ("lib/lp/simplex.cho", "w[o_w + i] = si;", "w[o_w + i] = w[o_w + i];", "a rewritten row keeps its old weight"),
+    ("lib/lp/simplex.cho", "w[o_w + r] = sr;", "w[o_w + r] = 1.0;", "the pivot row's weight is not taken from the row"),
+    ("lib/lp/simplex.cho", "si = si + nv * nv;", "si = si + nv;", "the weight sums values, not squares"),
 ]
 
 def build(root, out):
@@ -79,7 +85,7 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             continue
         env = dict(os.environ, SOLVE=out)
         dead = False
-        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_cli.py"):
+        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_cli.py", "check_iterations.py"):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:
                 dead = True
                 break

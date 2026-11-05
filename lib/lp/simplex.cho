@@ -49,6 +49,7 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
     let o_l = o_v + big;
     let o_h = o_l + big;
     let o_r = o_h + big;
+    let o_w = o_r + big;
     let p_pos = m;
     let p_at = m + big;
     let p_c = m + 2 * big;
@@ -90,6 +91,7 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
             t = t + 1;
         }
         w[i * big + n + i] = 1.0;
+        w[o_w + i] = 1.0;
         wi[i] = n + i;
         wi[p_pos + n + i] = i;
         i = i + 1;
@@ -128,6 +130,7 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
         // the basic variable that violates a bound most
         var r = 0 - 1;
         var worst = 0.0;
+        var score = 0.0;
         var up = false;
         i = 0;
         while i < m {
@@ -143,10 +146,14 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
             } else if v > ub + 1e-9 * (1.0 + mag(ub)) {
                 viol = v - ub;
             }
-            if viol > worst {
-                worst = viol;
-                r = i;
-                up = below;
+            if viol > 0.0 {
+                let sc = viol * viol / w[o_w + i];
+                if sc > score {
+                    score = sc;
+                    worst = viol;
+                    r = i;
+                    up = below;
+                }
             }
             i = i + 1;
         }
@@ -251,6 +258,14 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
             j = j + 1;
         }
         w[rb + q] = 1.0;
+        // the dual steepest-edge weight of a row is the squared length of its logical block, taken again from each row the pivot rewrites (design.md section 17.2)
+        var sr = 0.0;
+        j = n;
+        while j < big {
+            sr = sr + w[rb + j] * w[rb + j];
+            j = j + 1;
+        }
+        w[o_w + r] = sr;
         i = 0;
         while i < m {
             if i != r {
@@ -258,11 +273,22 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
                 if f != 0.0 {
                     let ib = i * big;
                     j = 0;
-                    while j < big {
+                    while j < n {
                         w[ib + j] = w[ib + j] - f * w[rb + j];
                         j = j + 1;
                     }
+                    var si = 0.0;
+                    while j < big {
+                        let nv = w[ib + j] - f * w[rb + j];
+                        w[ib + j] = nv;
+                        si = si + nv * nv;
+                        j = j + 1;
+                    }
                     w[ib + q] = 0.0;
+                    if si < 1e-30 {
+                        si = 1e-30;
+                    }
+                    w[o_w + i] = si;
                 }
             }
             i = i + 1;
@@ -298,14 +324,14 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
     stats[0] = 0;
     stats[1] = m;
     stats[2] = n;
-    if m * big + 6 * big > max_cells() {
+    if m * big + 6 * big + m > max_cells() {
         return s_too_large();
     }
     var cap = limit;
     if limit < 0 {
         cap = 100 * big + 1000;
     }
-    let w = box_slice(heap, m * big + 6 * big + 1, 0.0);
+    let w = box_slice(heap, m * big + 6 * big + m + 1, 0.0);
     let wi = box_slice(heap, m + 3 * big + 1, 0);
     var status = 0;
     borrow mut w as &!ww in {

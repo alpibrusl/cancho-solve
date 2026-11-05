@@ -307,7 +307,7 @@ What it shows, and nothing past it:
 
 **Where to look next (not done; each is a change to the solver and needs its own measurement):**
 
-1. **Fewer iterations:** the bound-flipping ratio test and dual steepest-edge pricing (section 15's hypothesis; the model is boxed throughout).
+1. **Fewer iterations:** the bound-flipping ratio test and dual steepest-edge pricing (section 15's hypothesis; the model is boxed throughout). **Done in section 17**: the iterations then matched HiGHS's within about ten percent on the dense and knapsack families and the gaps below closed to about parity on those instances. The figures of this section and of section 15 are the ones measured before that change.
 2. **Less work per iteration:** a revised simplex with an LU factorisation that exploits sparsity, in place of the dense tableau. This is the larger change.
 3. **Threads:** the row updates of one pivot are independent, and cancho has `spawn`/`join` with a one-pointer payload (`docs/parallelism.md`); not tried here. It would cut the 2.5 s by at most the number of cores, which does not change the iteration count.
 4. **Tooling:** a way to profile cancho programs by function would have saved this section's detours (frame pointers or a symbol table that survives inlining); that is a finding about the compiler, not about this solver.
@@ -349,3 +349,18 @@ The claim of 17.1 held: the boxed families gain most (a factor of 10 to 13 in it
 - Pricing: `score = viol^2 / w_i`; `delta` of the long step (17.1) is still the plain violation of the chosen row.
 
 **Claim to measure.** Iterations fall again on the random dense LPs (where the long step helps little, the columns being boxed wide); the cost per iteration rises by at most about `m / (n + m)`. The net time is measured, not assumed: if the iterations fall less than the cost rises, the change is not kept, and the section says so. **Gates:** oracle, CLI and language gates as before; mutants of the pricing (violation not squared, weights not divided, weights not recomputed) must be killed.
+
+**17.2 results (measured: `scripts/bench_highs.py --runs 3`, compiler `5a5dd1f2`, one machine, seed 7, minimum of 3 runs).** Gates: oracle 168 of 168, language, expand and CLI pass, and a new gate 5 (`scripts/check_iterations.py`) judges the iteration counts, because the oracle cannot see a worse pricing rule. The five mutants of the pricing: four were killed by the bounds of gate 5; one survived (the pivot row's weight set to 1 instead of taken from its row), because the counts moved only by two to four iterations, on transportation and assignment instances only (a scan of 160 instances: 12 differed, none on the dense or knapsack ones). Two exact counts were added to gate 5 and kill it. Time and iterations, before (17.1) then after (17.2); "ours" is the process minus start-up, "HiGHS" is `highs-ds` in-process:
+
+| instance | our iterations (HiGHS) | ours (s) | HiGHS (s) | ours/HiGHS |
+|---|---|---|---|---|
+| random dense 800x1600 | 25,655 then 2,692 (2,851) | 26.50 then 3.06 | 3.26 then 3.24 | 8.1 then 0.9 |
+| random dense 400x800 | 7,102 then 1,038 (1,118) | 1.80 then 0.30 | 0.26 then 0.27 | 7.0 then 1.1 |
+| multi-knapsack 4000 items, 200 rows | 7,084 then 527 (471) | 3.35 then 0.262 | 0.30 then 0.306 | 11.1 then 0.9 |
+| multi-knapsack 2000 items, 100 rows | 1,930 then 260 (258) | 0.257 then 0.039 | 0.065 then 0.065 | 4.0 then 0.6 |
+| assignment 100x100 | 333 then 214 (257) | 0.027 then 0.013 | 0.028 then 0.026 | 1.0 then 0.5 |
+| transportation 100x160 | 364 then 406 (260) | 0.043 then 0.049 | 0.035 then 0.036 | 1.2 then 1.4 |
+
+Every one of the 21 instances still agrees with HiGHS's optimal value. The iteration counts are now within about ten percent of HiGHS's on the dense and knapsack families (the gap of section 15 was a factor of 8 to 200), and the cost per iteration of the weights was small enough that the time followed the iterations. **What this does not show:** it is HiGHS through scipy, on four generated families of at most 800 rows, with the model already expanded; the dense tableau still does `m * (n + m)` work per iteration and holds that many cells (32 million at most), so a model of tens of thousands of rows is out of reach however few iterations it takes; HiGHS wins there by exploiting sparsity (presolve, LU), which is the next step and is not claimed here. Transportation got slightly worse (more iterations than before 17.2, 1.4 times HiGHS), an unexplained regression of one family that is left open.
+
+**Mutants after 17.2:** the whole suite of 45 gives 44 killed and 1 survived: the known one, "verified is always true", which can only be seen when the solver is already wrong (section 15). The five of the pricing were run with gate 5 added to the runner.

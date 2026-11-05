@@ -28,7 +28,7 @@ $ build/solve expand < knapsack.sol          # the flat model a solver reads
 {"variables":[{"name":"x[0]","kind":"bool","lo":0.0,"hi":1.0}, ...],"objective":{...},"constraints":[{"name":"capacity","sense":"<=","rhs":15.0,"terms":[[0,12.0],...]}]}
 ```
 
-**Status: S2.** The language (params, one- and two-dimensional variables, `sum`, `forall`, constant folding), `check`, `expand`, `run` (a dense dual simplex: LP, and the relaxation of a MIP with `--relax`), `introspect` and `skill` are built. It agrees with HiGHS on 168 test LPs and is at parity on transportation and assignment, **2x to 143x slower on dense or boxed LPs as they grow** (`docs/design.md` section 15). MIP is S3, CP S5.
+**Status: S2.** The language (params, one- and two-dimensional variables, `sum`, `forall`, constant folding), `check`, `expand`, `run` (a dense dual simplex with the bound-flipping ratio test and dual steepest-edge pricing: LP, and the relaxation of a MIP with `--relax`), `introspect` and `skill` are built. It agrees with HiGHS on 168 test LPs and, on the generated families of `scripts/bench_highs.py` (up to 800 rows, one machine, HiGHS through scipy), takes about as long as HiGHS's dual simplex, at 0.5x to 1.4x (`docs/design.md` sections 15 and 17). The dense tableau limits the size (32 million cells); sparse methods are not built. MIP is S3, CP S5.
 `docs/design.md` says what is claimed, how it is measured and what is open.
 
 ```
@@ -37,7 +37,8 @@ python3 scripts/check_language.py     # gate 1: tests/ok accepted, tests/refused
 python3 scripts/check_expand.py       # gate 2: solve expand equals the hand-derived tests/expand/*.json
 python3 scripts/check_cli.py          # gate 3: no input reaches a panic
 python3 scripts/check_highs.py        # gate 4: agrees with HiGHS (needs scipy)
-python3 scripts/bench_highs.py        # time against HiGHS: docs/design.md section 15
+python3 scripts/check_iterations.py    # gate 5: iteration counts (the pricing and the long step; docs/design.md section 17)
+python3 scripts/bench_highs.py        # time against HiGHS: docs/design.md sections 15 and 17
 CANCHO=... python3 scripts/mutants.py # deliberate changes to the checker; every one must be killed
 python3 scripts/gen_layout.py --check # lib/model/layout.cho is what the generator prints
 ```
