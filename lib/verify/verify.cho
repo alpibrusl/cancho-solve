@@ -1,0 +1,608 @@
+edition 7;
+
+module solve.verify;
+
+// `solve verify` (docs/design.md section 20): re-check a claimed solution against the expanded model. This file imports the model layout (the arrays `check` fills) and std.json, and
+// nothing from lib/lp, lib/mip or tools/solve/emit.cho: its names, sums and tolerances are its own code, so that a bug in the search or in the printer cannot hide a wrong answer here.
+
+import solve.layout as l;
+import std.buffer;
+import std.io;
+import std.json;
+
+// ------------------------------------------------------------ rule tags ---
+
+pub fn rule_count() -> [] int {
+    return 7;
+}
+
+pub fn rule_name(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "solve.bound-violated";
+    }
+    if code == 2 {
+        return "solve.not-integral";
+    }
+    if code == 3 {
+        return "solve.row-violated";
+    }
+    if code == 4 {
+        return "solve.objective-mismatch";
+    }
+    if code == 5 {
+        return "solve.bad-solution";
+    }
+    if code == 6 {
+        return "solve.missing-variable";
+    }
+    return "solve.unknown-variable";
+}
+
+pub fn rule_message(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "a claimed value is outside the bounds of its variable";
+    }
+    if code == 2 {
+        return "a bool or int variable has a fractional claimed value";
+    }
+    if code == 3 {
+        return "a constraint does not hold at the claimed values";
+    }
+    if code == 4 {
+        return "the claimed objective is not the objective evaluated at the claimed values";
+    }
+    if code == 5 {
+        return "the claimed solution is not a JSON object with an x object of numbers";
+    }
+    if code == 6 {
+        return "a variable of the model has no value in x";
+    }
+    return "x names a variable the model does not have";
+}
+
+pub fn rule_repair(code: int) -> [] &static [byte] {
+    if code == 1 {
+        return "move the value inside the bounds, or solve again";
+    }
+    if code == 2 {
+        return "round the value, or solve again";
+    }
+    if code == 3 {
+        return "the solution is infeasible; solve again";
+    }
+    if code == 4 {
+        return "claim the evaluated objective, or drop the objective member";
+    }
+    if code == 5 {
+        return "send the model, a line holding exactly ---, then solve run's output or {\"x\":{...},\"objective\":v}";
+    }
+    if code == 6 {
+        return "give every variable of the model a value";
+    }
+    return "remove the name, or check it against solve expand";
+}
+
+// ------------------------------------------------------------- numbers ---
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+fn bigger(a: float, b: float) -> [] float {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+// x itself when it is a finite number, else a large finite one: a violation that is not a number must still count as one.
+fn fin(x: float) -> [] float {
+    if x - x == 0.0 {
+        return x;
+    }
+    return 1.0e300;
+}
+
+// The distance from v to the nearest whole number.
+fn dist_whole(v: float) -> [] float {
+    if mag(v) >= 4.0e15 {
+        return 0.0;
+    }
+    let t = float_of(truncate(v));
+    var f = mag(v - t);
+    if 1.0 - f < f {
+        f = 1.0 - f;
+    }
+    return f;
+}
+
+// The tolerance written as a JSON number in [0, 0.1], or -1.0.
+pub fn parse_tolerance[&h, &a](heap: &!h Heap, text: &a [byte]) -> [heap] float {
+    let tape = box_slice(heap, json.tape_len(text) + 3, 0);
+    var nodes = 0;
+    var tol = 0.0 - 1.0;
+    borrow mut tape as &!tw in {
+        nodes = json.parse(text, contents(tw));
+        if nodes > 0 && json.is_number(contents(tw), 0) {
+            let v = json.to_float(text, contents(tw), 0);
+            if v >= 0.0 && v <= 0.1 {
+                tol = v;
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return tol;
+}
+
+// -------------------------------------------------------------- names ---
+
+fn push_int[&h](heap: &!h Heap, b: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    var out = b;
+    var m = n;
+    if m < 0 {
+        out = buffer.push(heap, out, byte_of('-'));
+        m = 0 - m;
+    }
+    return buffer.push_nat(heap, out, m);
+}
+
+// `x`, `x[3]` or `a[0,1]`: the name of element `off` of variable symbol `k`, as `solve expand` prints it.
+fn var_name[&h, &t, &a](heap: &!h Heap, text: &t [byte], ints: &a [int], k: int, off: int) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 16);
+    out = buffer.append(heap, out, text[ints[l.sym_s(k)]..ints[l.sym_e(k)]]);
+    let nd = ints[l.sym_nd(k)];
+    if nd == 1 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.sym_lo0(k)] + off);
+        out = buffer.push(heap, out, byte_of(']'));
+    } else if nd == 2 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.sym_lo0(k)] + off / ints[l.sym_n1(k)]);
+        out = buffer.push(heap, out, byte_of(','));
+        out = push_int(heap, out, ints[l.sym_lo1(k)] + off % ints[l.sym_n1(k)]);
+        out = buffer.push(heap, out, byte_of(']'));
+    }
+    return out;
+}
+
+// The label of row `r` and the loop values it was made under (`cap[0,2]`), or `row <r>` when it has no label.
+fn row_name[&h, &t, &a](heap: &!h Heap, text: &t [byte], ints: &a [int], r: int) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 16);
+    if ints[l.row_ne(r)] <= ints[l.row_ns(r)] {
+        out = buffer.append(heap, out, "row ");
+        return push_int(heap, out, r);
+    }
+    out = buffer.append(heap, out, text[ints[l.row_ns(r)]..ints[l.row_ne(r)]]);
+    let n = ints[l.row_nidx(r)];
+    if n > 0 {
+        out = buffer.push(heap, out, byte_of('['));
+        out = push_int(heap, out, ints[l.row_i0(r)]);
+        if n > 1 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i1(r)]);
+        }
+        if n > 2 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i2(r)]);
+        }
+        if n > 3 {
+            out = buffer.push(heap, out, byte_of(','));
+            out = push_int(heap, out, ints[l.row_i3(r)]);
+        }
+        out = buffer.push(heap, out, byte_of(']'));
+    }
+    return out;
+}
+
+// ------------------------------------------------------------- output ---
+
+// A refusal with a message built at run time. Takes the message buffer and frees it.
+fn refuse_text[&h, &i](heap: &!h Heap, io: &!i Io, code: int, message: buffer.Buffer, extra: buffer.Buffer, count: int) -> [heap, err_write] int {
+    var w = json.writer(heap, 512);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "error");
+    w = json.put_string(heap, w, rule_name(code));
+    w = json.put_key(heap, w, "message");
+    borrow message as &mb in {
+        w = json.put_string(heap, w, buffer.bytes(mb));
+    }
+    w = json.put_key(heap, w, "repair");
+    w = json.put_string(heap, w, rule_repair(code));
+    if count > 0 {
+        w = json.put_key(heap, w, "count");
+        w = json.put_int(heap, w, count);
+        w = json.put_key(heap, w, "violations");
+        borrow extra as &eb in {
+            w = json.put_fragment(heap, w, buffer.bytes(eb));
+        }
+    }
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        io.error_all(io, buffer.bytes(or));
+    }
+    buffer.drop(heap, out);
+    buffer.drop(heap, message);
+    buffer.drop(heap, extra);
+    return 2;
+}
+
+// A refusal about one name: "<what>: <message>".
+fn refuse_named[&h, &i, &a](heap: &!h Heap, io: &!i Io, code: int, name: &a [byte]) -> [heap, err_write] int {
+    var m = buffer.empty(heap, 64);
+    m = buffer.append(heap, m, name);
+    m = buffer.append(heap, m, ": ");
+    m = buffer.append(heap, m, rule_message(code));
+    return refuse_text(heap, io, code, m, buffer.empty(heap, 1), 0);
+}
+
+fn refuse_plain[&h, &i](heap: &!h Heap, io: &!i Io, code: int, message: &static [byte]) -> [heap, err_write] int {
+    var m = buffer.empty(heap, 64);
+    m = buffer.append(heap, m, message);
+    return refuse_text(heap, io, code, m, buffer.empty(heap, 1), 0);
+}
+
+// Record one violation: the first ten go to the list `vw` (an open array), all are counted in acc[0]; acc[1] holds the rule of the first.
+fn note[&h, &a, &c](heap: &!h Heap, vw: json.Writer, acc: &!c [int], code: int, what: &a [byte], value: float, limit: float) -> [heap] json.Writer {
+    var w = vw;
+    if acc[0] == 0 {
+        acc[1] = code;
+    }
+    if acc[0] < 10 {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "rule");
+        w = json.put_string(heap, w, rule_name(code));
+        w = json.put_key(heap, w, "what");
+        w = json.put_string(heap, w, what);
+        w = json.put_key(heap, w, "value");
+        w = json.put_float(heap, w, value);
+        w = json.put_key(heap, w, "limit");
+        w = json.put_float(heap, w, limit);
+        w = json.end_object(heap, w);
+    }
+    acc[0] = acc[0] + 1;
+    return w;
+}
+
+// ------------------------------------------------------------- values ---
+
+// Read the value of every variable from the object at node `xo` into `xv` (indexed by column), and mark the member nodes used in `hit`. The names arrive in the model's order when they
+// come from `run`: the next member is tried first, and a name that is not the next member is looked up (quadratic, for unordered input only). Returns -1 when all is well, else the
+// exit status of the refusal already printed.
+fn load[&h, &i, &t, &s, &q, &p, &c, &d](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &q [int], src: &s [byte], tape: &p [int], xo: int, xv: &!c [float], hit: &!d [int]) -> [heap, err_write] int {
+    var j = xo + 1;
+    var left = json.count(tape, xo);
+    var status = 0 - 1;
+    var k = 0;
+    while k < ints[l.h_nsym()] && status < 0 {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] && status < 0 {
+                let nm = var_name(heap, text, ints, k, off);
+                var v = 0 - 1;
+                borrow nm as &nb in {
+                    if left > 0 && json.string_equals(src, tape, j, buffer.bytes(nb)) {
+                        v = j + 1;
+                        j = json.skip(tape, j + 1);
+                        left = left - 1;
+                    } else {
+                        v = json.get(src, tape, xo, buffer.bytes(nb));
+                    }
+                    if v < 0 {
+                        status = refuse_named(heap, io, 6, buffer.bytes(nb));
+                    } else if !json.is_number(tape, v) {
+                        var m = buffer.empty(heap, 64);
+                        m = buffer.append(heap, m, buffer.bytes(nb));
+                        m = buffer.append(heap, m, ": the value is not a number");
+                        status = refuse_text(heap, io, 5, m, buffer.empty(heap, 1), 0);
+                    } else {
+                        let xval = json.to_float(src, tape, v);
+                        if xval - xval != 0.0 {
+                            var m = buffer.empty(heap, 64);
+                            m = buffer.append(heap, m, buffer.bytes(nb));
+                            m = buffer.append(heap, m, ": the value is not a finite number");
+                            status = refuse_text(heap, io, 5, m, buffer.empty(heap, 1), 0);
+                        } else {
+                            xv[ints[l.sym_base(k)] + off] = xval;
+                            hit[v] = 1;
+                        }
+                    }
+                }
+                buffer.drop(heap, nm);
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    if status >= 0 {
+        return status;
+    }
+    // every variable has a value; a member left over is a repeated name or an unknown one
+    if json.count(tape, xo) > ints[l.h_nvars()] {
+        var m2 = xo + 1;
+        var n2 = json.count(tape, xo);
+        while n2 > 0 && status < 0 {
+            if hit[m2 + 1] == 0 {
+                var repeated = false;
+                var m3 = xo + 1;
+                var n3 = json.count(tape, xo);
+                while n3 > 0 {
+                    if hit[m3 + 1] == 1 && json.string_equals(src, tape, m3, json.string_view(src, tape, m2)) {
+                        repeated = true;
+                    }
+                    m3 = json.skip(tape, m3 + 1);
+                    n3 = n3 - 1;
+                }
+                if repeated {
+                    status = refuse_named(heap, io, 5, json.string_view(src, tape, m2));
+                } else {
+                    status = refuse_named(heap, io, 7, json.string_view(src, tape, m2));
+                }
+            }
+            m2 = json.skip(tape, m2 + 1);
+            n2 = n2 - 1;
+        }
+    }
+    return status;
+}
+
+// ------------------------------------------------------------- checks ---
+
+// Add `v` to the compensated sum (s, c) (Neumaier): s[0] is the sum, s[1] the compensation.
+fn add_to[&c](s: &!c [float], v: float) -> [] int {
+    let t = s[0] + v;
+    if mag(s[0]) >= mag(v) {
+        s[1] = s[1] + ((s[0] - t) + v);
+    } else {
+        s[1] = s[1] + ((v - t) + s[0]);
+    }
+    s[0] = t;
+    return 0;
+}
+
+// All checks of docs/design.md 20.3 on the values `xv`. `acc`: the number of violations and the rule of the first; `mx`: the largest scaled bound, integrality and row violations.
+fn judge[&h, &i, &t, &a, &b, &c, &d, &e, &f](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &a [int], fl: &b [float], xv: &c [float], has_claim: bool, claimed: float, tol: float, acc: &!d [int], mx: &!e [float], ev: &!f [float]) -> [heap, err_write] int {
+    var vw = json.writer(heap, 512);
+    vw = json.begin_array(heap, vw);
+    // 1. bounds
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            let lo = fl[l.sym_lo(k)];
+            let hi = fl[l.sym_hi(k)];
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let v = xv[ints[l.sym_base(k)] + off];
+                let dl = fin(lo - v);
+                let dh = fin(v - hi);
+                let sl = 1.0 + mag(lo);
+                let sh = 1.0 + mag(hi);
+                if dl / sl > mx[0] {
+                    mx[0] = dl / sl;
+                }
+                if dh / sh > mx[0] {
+                    mx[0] = dh / sh;
+                }
+                if !(dl <= tol * sl) {
+                    let nm = var_name(heap, text, ints, k, off);
+                    borrow nm as &nb in {
+                        vw = note(heap, vw, acc, 1, buffer.bytes(nb), dl, tol * sl);
+                    }
+                    buffer.drop(heap, nm);
+                } else if !(dh <= tol * sh) {
+                    let nm = var_name(heap, text, ints, k, off);
+                    borrow nm as &nb in {
+                        vw = note(heap, vw, acc, 1, buffer.bytes(nb), dh, tol * sh);
+                    }
+                    buffer.drop(heap, nm);
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    // 2. integrality of bool and int variables
+    k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 && ints[l.sym_kind(k)] < 2 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let f = dist_whole(xv[ints[l.sym_base(k)] + off]);
+                if f > mx[1] {
+                    mx[1] = f;
+                }
+                if !(f <= tol) {
+                    let nm = var_name(heap, text, ints, k, off);
+                    borrow nm as &nb in {
+                        vw = note(heap, vw, acc, 2, buffer.bytes(nb), f, tol);
+                    }
+                    buffer.drop(heap, nm);
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    // 3. rows
+    let sum = box_slice(heap, 2, 0.0);
+    borrow mut sum as &!sw in {
+        let sv = contents(sw);
+        var r = 0;
+        while r < ints[l.h_ncons()] {
+            sv[0] = 0.0;
+            sv[1] = 0.0;
+            var terms = 0.0;
+            var t2 = ints[l.row_start(r)];
+            while t2 < ints[l.row_start(r + 1)] {
+                let prod = fl[l.term_coef(t2)] * xv[ints[l.term_col(t2)]];
+                add_to(sv, prod);
+                terms = terms + mag(prod);
+                t2 = t2 + 1;
+            }
+            let act = sv[0] + sv[1];
+            let rhs = fl[l.row_rhs(r)];
+            var d = act - rhs;
+            if ints[l.row_sense(r)] == 1 {
+                d = rhs - act;
+            } else if ints[l.row_sense(r)] == 2 {
+                d = mag(act - rhs);
+            }
+            d = fin(d);
+            let scale = fin(1.0 + bigger(mag(rhs), fin(terms)));
+            if d / scale > mx[2] {
+                mx[2] = d / scale;
+            }
+            if !(d <= tol * scale) {
+                let nm = row_name(heap, text, ints, r);
+                borrow nm as &nb in {
+                    vw = note(heap, vw, acc, 3, buffer.bytes(nb), d, tol * scale);
+                }
+                buffer.drop(heap, nm);
+            }
+            r = r + 1;
+        }
+        // 4. the objective, evaluated from the values as given
+        sv[0] = 0.0;
+        sv[1] = 0.0;
+        if ints[l.h_sense()] != 0 {
+            add_to(sv, fl[l.obj_const(0)]);
+            var t3 = 0;
+            while t3 < ints[l.h_obj_nnz()] {
+                add_to(sv, fl[l.obj_coef(t3)] * xv[ints[l.obj_col(t3)]]);
+                t3 = t3 + 1;
+            }
+        }
+        ev[0] = sv[0] + sv[1];
+    }
+    unbox_slice(heap, sum);
+    if has_claim {
+        let dd = fin(mag(claimed - ev[0]));
+        let lim = tol * (1.0 + mag(fin(ev[0])));
+        if !(dd <= lim) {
+            vw = note(heap, vw, acc, 4, "objective", dd, lim);
+        }
+    }
+    vw = json.end_array(heap, vw);
+    let list = json.finish(vw);
+    if acc[0] > 0 {
+        var m = buffer.empty(heap, 64);
+        m = buffer.append(heap, m, rule_message(acc[1]));
+        return refuse_text(heap, io, acc[1], m, list, acc[0]);
+    }
+    buffer.drop(heap, list);
+    return 0 - 1;
+}
+
+fn report[&h, &i, &e, &f](heap: &!h Heap, io: &!i Io, ints: &e [int], objective: float, checked: bool, tol: float, mx: &f [float]) -> [heap, io_write] int {
+    var w = json.writer(heap, 512);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "status");
+    w = json.put_string(heap, w, "verified");
+    w = json.put_key(heap, w, "objective");
+    w = json.put_float(heap, w, objective + 0.0);
+    w = json.put_key(heap, w, "objective_checked");
+    w = json.put_bool(heap, w, checked);
+    w = json.put_key(heap, w, "tolerance");
+    w = json.put_float(heap, w, tol);
+    w = json.put_key(heap, w, "max_bound_violation");
+    w = json.put_float(heap, w, mx[0] + 0.0);
+    w = json.put_key(heap, w, "max_integrality_violation");
+    w = json.put_float(heap, w, mx[1] + 0.0);
+    w = json.put_key(heap, w, "max_row_violation");
+    w = json.put_float(heap, w, mx[2] + 0.0);
+    w = json.put_key(heap, w, "variables");
+    w = json.put_int(heap, w, ints[l.h_nvars()]);
+    w = json.put_key(heap, w, "rows");
+    w = json.put_int(heap, w, ints[l.h_ncons()]);
+    w = json.put_key(heap, w, "proves");
+    w = json.put_string(heap, w, "feasibility and the objective value, not optimality");
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        buffer.write(io, or);
+    }
+    buffer.drop(heap, out);
+    return 0;
+}
+
+// ------------------------------------------------------------- driver ---
+
+// Verify the claimed solution `sol` (JSON text) against the checked model (`text`, `ints`, `fl`). Prints the verdict; returns the exit status (0 verified, 2 refused).
+pub fn run[&h, &i, &t, &a, &b, &s](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &a [int], fl: &b [float], sol: &s [byte], tol: float) -> [heap, io_write, err_write] int {
+    let tape = box_slice(heap, json.tape_len(sol) + 3, 0);
+    var nodes = 0;
+    borrow mut tape as &!tw in {
+        nodes = json.parse(sol, contents(tw));
+    }
+    var status = 2;
+    if nodes <= 0 {
+        var m = buffer.empty(heap, 64);
+        m = buffer.append(heap, m, "the solution is not JSON: ");
+        var code = 1;
+        if nodes < 0 {
+            code = json.error_code(nodes);
+        }
+        m = buffer.append(heap, m, json.error_message(code));
+        m = buffer.append(heap, m, " at byte ");
+        m = push_int(heap, m, json.error_position(nodes));
+        status = refuse_text(heap, io, 5, m, buffer.empty(heap, 1), 0);
+    } else {
+        borrow tape as &tr in {
+            let tp = contents(tr);
+            let xo = json.get(sol, tp, 0, "x");
+            let co = json.get(sol, tp, 0, "objective");
+            if !json.is_object(tp, 0) {
+                status = refuse_plain(heap, io, 5, "the solution is not a JSON object");
+            } else if xo < 0 || !json.is_object(tp, xo) {
+                status = refuse_plain(heap, io, 5, "the solution has no x object (a result that is infeasible or unknown has nothing to verify)");
+            } else if co >= 0 && !json.is_number(tp, co) {
+                status = refuse_plain(heap, io, 5, "objective is not a number");
+            } else {
+                let xs = box_slice(heap, ints[l.h_nvars()] + 1, 0.0);
+                let hit = box_slice(heap, nodes + 2, 0);
+                let acc = box_slice(heap, 2, 0);
+                let mx = box_slice(heap, 3, 0.0);
+                let ev = box_slice(heap, 1, 0.0);
+                borrow mut xs as &!xw in {
+                    borrow mut hit as &!hw in {
+                        let s1 = load(heap, io, text, ints, sol, tp, xo, contents(xw), contents(hw));
+                        if s1 >= 0 {
+                            status = s1;
+                        } else {
+                            var claimed = 0.0;
+                            if co >= 0 {
+                                claimed = json.to_float(sol, tp, co);
+                            }
+                            if claimed - claimed != 0.0 {
+                                status = refuse_plain(heap, io, 5, "objective is not a finite number");
+                            } else {
+                                borrow mut acc as &!aw in {
+                                    borrow mut mx as &!mw in {
+                                        borrow mut ev as &!ew in {
+                                            let s2 = judge(heap, io, text, ints, fl, contents(xw), co >= 0, claimed, tol, contents(aw), contents(mw), contents(ew));
+                                            if s2 >= 0 {
+                                                status = s2;
+                                            } else {
+                                                status = report(heap, io, ints, contents(ew)[0], co >= 0, tol, contents(mw));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                unbox_slice(heap, ev);
+                unbox_slice(heap, mx);
+                unbox_slice(heap, acc);
+                unbox_slice(heap, hit);
+                unbox_slice(heap, xs);
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return status;
+}

@@ -5,6 +5,7 @@ edition 7;
 //     solve check           read a model on standard input and check it
 //     solve expand          read a model on standard input and print the expanded flat model (docs/design.md section 12)
 //     solve run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo]   solve the model: an LP (sections 14, 18.3) or a MIP (section 19)
+//     solve verify [--tolerance T]   read a model, a line `---` and a claimed solution on standard input; re-check feasibility and the objective (docs/design.md section 20)
 //     solve introspect      the commands, exit codes and rule tags as JSON
 //     solve skill           how to write a model, as text
 //
@@ -23,6 +24,7 @@ import solve.mip;
 import solve.revised;
 import solve.simplex;
 import solve.stmt;
+import solve.verify;
 import std.buffer;
 import std.bytes;
 import std.io;
@@ -139,6 +141,61 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
     return status;
 }
 
+// `verify` (docs/design.md section 20): standard input is the model, a line holding exactly `---`, then the claimed solution. The model is checked as for every verb; the check
+// of the solution is lib/verify/verify.cho, which shares nothing with the search.
+fn run_verify[&h, &i](heap: &!h Heap, io: &!i Io, tol: float) -> [heap, io_read, io_write, err_write] int {
+    let text = slurp(heap, io);
+    let ints = box_slice(heap, layout.ints_len(), 0);
+    let fl = box_slice(heap, layout.fl_len(), 0.0);
+    var status = 2;
+    borrow text as &tb in {
+        let tx = buffer.bytes(tb);
+        // the first line that is `---` (a trailing carriage return allowed)
+        var pos = 0;
+        var cut = 0 - 1;
+        var after = 0;
+        while pos <= len(tx) && cut < 0 {
+            var e = pos;
+            while e < len(tx) && int_of(tx[e]) != 10 {
+                e = e + 1;
+            }
+            var le = e;
+            if le > pos && int_of(tx[le - 1]) == 13 {
+                le = le - 1;
+            }
+            if le - pos == 3 && int_of(tx[pos]) == '-' && int_of(tx[pos + 1]) == '-' && int_of(tx[pos + 2]) == '-' {
+                cut = pos;
+                after = e + 1;
+                if after > len(tx) {
+                    after = len(tx);
+                }
+            }
+            pos = e + 1;
+        }
+        if cut < 0 {
+            status = emit.refuse(heap, io, verify.rule_name(5), "no line holding exactly --- separates the model from the claimed solution", verify.rule_repair(5), tx, 0 - 1);
+        } else {
+            let model = tx[0..cut];
+            borrow mut ints as &!iw in {
+                borrow mut fl as &!fw in {
+                    let n = contents(iw);
+                    let f = contents(fw);
+                    let rule = stmt.check(model, n, f);
+                    if rule != 0 {
+                        status = emit.refuse(heap, io, lex.rule_name(rule), lex.rule_message(rule), lex.rule_repair(rule), model, n[layout.h_at()]);
+                    } else {
+                        status = verify.run(heap, io, model, n, f, tx[after..len(tx)], tol);
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, fl);
+    unbox_slice(heap, ints);
+    buffer.drop(heap, text);
+    return status;
+}
+
 // A non-negative decimal number, or -1.
 fn parse_count[&a](text: &a [byte]) -> [] int {
     if len(text) == 0 || len(text) > 12 {
@@ -186,7 +243,7 @@ fn method_code[&a](text: &a [byte]) -> [] int {
 }
 
 fn usage[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, err_write] int {
-    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo] | introspect | skill", "pass one verb; check and expand read the model on standard input", "", 0 - 1);
+    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo] | verify [--tolerance T] | introspect | skill", "pass one verb; check, expand, run and verify read the model on standard input", "", 0 - 1);
 }
 
 fn main(world: World) -> [] int {
@@ -249,6 +306,24 @@ fn main(world: World) -> [] int {
                     }
                     if good {
                         status = run_model(h, i, 2, relax, limit, method, onodes, osel, obr, oexp);
+                    } else {
+                        status = usage(h, i);
+                    }
+                } else if bytes.equal(arg(g, 1), "verify") {
+                    var tol = 1.0e-6;
+                    var good = true;
+                    var a = 2;
+                    while a < arg_count(g) && good {
+                        if bytes.equal(arg(g, a), "--tolerance") && a + 1 < arg_count(g) && verify.parse_tolerance(h, arg(g, a + 1)) >= 0.0 {
+                            tol = verify.parse_tolerance(h, arg(g, a + 1));
+                            a = a + 1;
+                        } else {
+                            good = false;
+                        }
+                        a = a + 1;
+                    }
+                    if good {
+                        status = run_verify(h, i, tol);
                     } else {
                         status = usage(h, i);
                     }
