@@ -1,0 +1,254 @@
+edition 7;
+
+// `sparsetest` -- the sparse linear algebra of lib/lp/sparse.cho on its own, for scripts/check_sparse.py (docs/design.md section 18.3.1). Not a user verb.
+//
+// Standard input, one JSON object: {"m":M,"bstart":[..],"bind":[..],"bval":[..],"etas":[{"r":POS,"rows":[..],"vals":[..]},..],"ftran":[[..],..],"btran":[[..],..]}.
+// The basis is factorised; each eta entry is a column replacing the one at position r (its FTRAN is computed and pushed as an eta); then each `ftran` vector is solved
+// with B x = b and each `btran` vector with y B = c. Standard output: {"status":S,"etas":N,"lnz":..,"unz":..,"lmax":..,"ftran":[[..]],"btran":[[..]]}; status 0 is a factorisation,
+// 1 a singular basis, 2 a pool too small even after growing it, 3 an eta file too small.
+
+import solve.sparse;
+import std.buffer;
+import std.io;
+import std.json;
+
+fn slurp[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_read] buffer.Buffer {
+    var out = buffer.empty(heap, 4096);
+    var c = getchar(io);
+    while c >= 0 {
+        out = buffer.push(heap, out, byte_of(c));
+        c = getchar(io);
+    }
+    return out;
+}
+
+fn fill_ints[&s, &t, &d](src: &s [byte], tape: &t [int], node: int, out: &!d [int], at: int) -> [] int {
+    var j = node + 1;
+    var e = 0;
+    let n = json.count(tape, node);
+    while e < n {
+        out[at + e] = json.to_int(src, tape, j);
+        j = json.skip(tape, j);
+        e = e + 1;
+    }
+    return n;
+}
+
+fn fill_floats[&s, &t, &d](src: &s [byte], tape: &t [int], node: int, out: &!d [float], at: int) -> [] int {
+    var j = node + 1;
+    var e = 0;
+    let n = json.count(tape, node);
+    while e < n {
+        out[at + e] = json.to_float(src, tape, j);
+        j = json.skip(tape, j);
+        e = e + 1;
+    }
+    return n;
+}
+
+// Everything but the pools: reads the model, runs the attempt with pool size `p`, writes the answer into `w`; the status is returned (2: try a larger pool).
+fn attempt[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], p: int, wout: json.Writer) -> [heap] (int, json.Writer) {
+    var w = wout;
+    let m = json.to_int(src, tape, json.get(src, tape, 0, "m"));
+    let nb = json.get(src, tape, 0, "bind");
+    let nnz = json.count(tape, nb);
+    let etas = json.get(src, tape, 0, "etas");
+    let ne = json.count(tape, etas);
+    var etot = 0;
+    var en = etas + 1;
+    var q = 0;
+    while q < ne {
+        etot = etot + json.count(tape, json.get(src, tape, en, "rows"));
+        en = json.skip(tape, en);
+        q = q + 1;
+    }
+    let k = ne + 1;
+    let e = ne * m + 1;
+    let fi = box_slice(heap, sparse.ints_len(m, p, k, e), 0);
+    let ff = box_slice(heap, sparse.floats_len(m, p, k, e), 0.0);
+    // di: bstart (m+1), bind (nnz); df: bval (nnz), x (m), alpha (m), col (m)
+    let di = box_slice(heap, m + 1 + nnz + 1, 0);
+    let df = box_slice(heap, nnz + 3 * m + 1, 0.0);
+    var status = 0;
+    borrow mut fi as &!fb in {
+        borrow mut ff as &!ffb in {
+            borrow mut di as &!db in {
+                borrow mut df as &!dfb in {
+                    let a = contents(fb);
+                    let b = contents(ffb);
+                    let d = contents(db);
+                    let f = contents(dfb);
+                    fill_ints(src, tape, json.get(src, tape, 0, "bstart"), d, 0);
+                    fill_ints(src, tape, nb, d, m + 1);
+                    fill_floats(src, tape, json.get(src, tape, 0, "bval"), f, 0);
+                    sparse.init(a, m, p, k, e);
+                    status = sparse.factor(a, b, d[0..m + 1], d[m + 1..m + 1 + nnz], f[0..nnz]);
+                    if status == 0 {
+                        // the etas
+                        var en2 = etas + 1;
+                        var q2 = 0;
+                        while q2 < ne && status == 0 {
+                            var z = 0;
+                            while z < m {
+                                f[nnz + m + m + z] = 0.0;
+                                z = z + 1;
+                            }
+                            let rows = json.get(src, tape, en2, "rows");
+                            let vals = json.get(src, tape, en2, "vals");
+                            var jr = rows + 1;
+                            var jv = vals + 1;
+                            var c = 0;
+                            while c < json.count(tape, rows) {
+                                f[nnz + m + m + json.to_int(src, tape, jr)] = json.to_float(src, tape, jv);
+                                jr = json.skip(tape, jr);
+                                jv = json.skip(tape, jv);
+                                c = c + 1;
+                            }
+                            z = 0;
+                            while z < m {
+                                f[nnz + z] = f[nnz + m + m + z];
+                                z = z + 1;
+                            }
+                            sparse.ftran(a, b, f[nnz..nnz + m]);
+                            status = sparse.push_eta(a, b, json.to_int(src, tape, json.get(src, tape, en2, "r")), f[nnz..nnz + m]);
+                            en2 = json.skip(tape, en2);
+                            q2 = q2 + 1;
+                        }
+                    }
+                    if status == 0 {
+                        w = json.begin_object(heap, w);
+                        w = json.put_key(heap, w, "status");
+                        w = json.put_int(heap, w, 0);
+                        w = json.put_key(heap, w, "etas");
+                        w = json.put_int(heap, w, a[4]);
+                        w = json.put_key(heap, w, "lnz");
+                        w = json.put_int(heap, w, a[6]);
+                        w = json.put_key(heap, w, "unz");
+                        w = json.put_int(heap, w, a[7]);
+                        w = json.put_key(heap, w, "lmax");
+                        w = json.put_float(heap, w, sparse.l_max(a, b));
+                        w = json.put_key(heap, w, "ftran");
+                        w = json.begin_array(heap, w);
+                        let fv = json.get(src, tape, 0, "ftran");
+                        var vn = fv + 1;
+                        var vi = 0;
+                        while vi < json.count(tape, fv) {
+                            fill_floats(src, tape, vn, f, nnz);
+                            sparse.ftran(a, b, f[nnz..nnz + m]);
+                            w = json.begin_array(heap, w);
+                            var z = 0;
+                            while z < m {
+                                w = json.put_float(heap, w, f[nnz + z]);
+                                z = z + 1;
+                            }
+                            w = json.end_array(heap, w);
+                            vn = json.skip(tape, vn);
+                            vi = vi + 1;
+                        }
+                        w = json.end_array(heap, w);
+                        w = json.put_key(heap, w, "btran");
+                        w = json.begin_array(heap, w);
+                        let bv = json.get(src, tape, 0, "btran");
+                        vn = bv + 1;
+                        vi = 0;
+                        while vi < json.count(tape, bv) {
+                            fill_floats(src, tape, vn, f, nnz);
+                            sparse.btran(a, b, f[nnz..nnz + m]);
+                            w = json.begin_array(heap, w);
+                            var z = 0;
+                            while z < m {
+                                w = json.put_float(heap, w, f[nnz + z]);
+                                z = z + 1;
+                            }
+                            w = json.end_array(heap, w);
+                            vn = json.skip(tape, vn);
+                            vi = vi + 1;
+                        }
+                        w = json.end_array(heap, w);
+                        w = json.end_object(heap, w);
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, df);
+    unbox_slice(heap, di);
+    unbox_slice(heap, ff);
+    unbox_slice(heap, fi);
+    return (status, w);
+}
+
+fn drive[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_read, io_write] int {
+    let text = slurp(heap, io);
+    var code = 0;
+    borrow text as &tb in {
+        let src = buffer.bytes(tb);
+        let tape = box_slice(heap, json.tape_len(src), 0);
+        borrow mut tape as &!tw in {
+            let tp = contents(tw);
+            let nodes = json.parse(src, tp);
+            if nodes < 0 {
+                code = 4;
+            } else {
+                let m = json.to_int(src, tp, json.get(src, tp, 0, "m"));
+                let nnz = json.count(tp, json.get(src, tp, 0, "bind"));
+                var p = 8 * nnz + 16 * m + 1024;
+                var tries = 0;
+                var done = false;
+                while !done {
+                    let w0 = json.writer(heap, 1024);
+                    let (status, w) = attempt(heap, src, tp, p, w0);
+                    if status == 2 && tries < 3 {
+                        json.drop(heap, w);
+                        p = 4 * p;
+                        tries = tries + 1;
+                    } else {
+                        done = true;
+                        if status == 0 {
+                            let out = buffer.push(heap, json.finish(w), byte_of(10));
+                            borrow out as &or in {
+                                buffer.write(io, or);
+                            }
+                            buffer.drop(heap, out);
+                        } else {
+                            json.drop(heap, w);
+                            var w3 = json.writer(heap, 64);
+                            w3 = json.begin_object(heap, w3);
+                            w3 = json.put_key(heap, w3, "status");
+                            w3 = json.put_int(heap, w3, status);
+                            w3 = json.end_object(heap, w3);
+                            let out = buffer.push(heap, json.finish(w3), byte_of(10));
+                            borrow out as &or in {
+                                buffer.write(io, or);
+                            }
+                            buffer.drop(heap, out);
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(heap, tape);
+    }
+    buffer.drop(heap, text);
+    return code;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi);
+    release(fs);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(args);
+    var status = 2;
+    borrow mut heap as &!h in {
+        borrow mut io as &!i in {
+            status = drive(h, i);
+        }
+    }
+    release(heap);
+    release(io);
+    return status;
+}

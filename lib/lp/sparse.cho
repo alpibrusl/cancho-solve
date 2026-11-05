@@ -1,0 +1,790 @@
+edition 7;
+
+module solve.sparse;
+
+// Sparse linear algebra for the revised dual simplex (docs/design.md section 18.3.1): the LU factorisation of a basis with Markowitz pivot selection and a threshold test,
+// FTRAN and BTRAN, and product-form etas for the basis changes after the factorisation.
+//
+// cancho has no structs holding slices, no closures and no growable per-row lists, so the whole state is two flat slices, `fi` (ints) and `ff` (floats), whose cells are
+// named by a header at the start of `fi` (the same device as layout.cho). `init` writes the header; every other function reads its offsets from it.
+//
+// Vocabulary. B is m x m, in column form: column j has the rows `bind[bstart[j] .. bstart[j+1]]` and the values `bval[..]`. A *row index* i is a row of B; a *position* j is
+// a column of B. FTRAN solves B x = b: b is indexed by row, x by position. BTRAN solves y B = c: c is indexed by position, y by row. Pivot number k is the k-th pivot of the
+// elimination; `pivrow[k]`, `pivcol[k]` are its row and position, and U is kept in *pivot numbers*, so that it is upper triangular.
+//
+// The factorisation is right-looking: the active matrix is held by rows (positions and values) and by columns (row indices only), each row and column in a pool with room
+// to grow; a list that outgrows its room moves to the end of the pool, and a pool that runs out ends the factorisation with code 2 (the caller decides what to do).
+// L is kept as one eta for each pivot (the multipliers of the rows below the pivot row), U by rows (for BTRAN) and by columns (for FTRAN).
+//
+// Header of `fi`:
+//   0 m, 1 pool size P, 2 eta count capacity K, 3 eta entry capacity E, 4 etas now, 5 eta entries now, 6 nnz(L), 7 nnz(U) off the diagonal, 8 row pool top, 9 column pool top
+//   10 rstart, 11 rlen, 12 rcap, 13 rind, 14 cstart, 15 clen, 16 ccap, 17 cind, 18 pivrow, 19 pivcol, 20 rk, 21 ck, 22 lstart, 23 lrow, 24 ustart, 25 ucol, 26 ucstart,
+//   27 ucrow, 28 actc, 29 actpos, 30 cstk, 31 rstk, 32 cin, 33 rin, 34 mark, 35 estart, 36 epos, 37 eidx, 38 pm
+//   (the offsets of the arrays in `fi`), and 40 rval, 41 lval, 42 uval, 43 ucval, 44 piv, 45 w1, 46 w2, 47 eval, 48 ealpha (the offsets of the arrays in `ff`).
+
+// results
+pub fn r_ok() -> [] int {
+    return 0;
+}
+
+pub fn r_singular() -> [] int {
+    return 1;
+}
+
+pub fn r_pool() -> [] int {
+    return 2;
+}
+
+pub fn r_eta_full() -> [] int {
+    return 3;
+}
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// The threshold: a pivot must be at least this fraction of the largest entry of its column (a choice, design.md 18.3.1).
+fn threshold() -> [] float {
+    return 0.1;
+}
+
+// The smallest value taken as a pivot.
+fn tiny() -> [] float {
+    return 1e-11;
+}
+
+pub fn ints_len(m: int, p: int, k: int, e: int) -> [] int {
+    return 64 + 18 * m + 3 * (m + 1) + 5 * p + (k + 1) + k + e;
+}
+
+pub fn floats_len(m: int, p: int, k: int, e: int) -> [] int {
+    return 8 + 4 * p + 3 * m + e + k;
+}
+
+// Writes the header. `p` is the pool size, `k` the most etas, `e` the most eta entries. Returns 0.
+pub fn init[&a](fi: &!a [int], m: int, p: int, k: int, e: int) -> [] int {
+    fi[0] = m;
+    fi[1] = p;
+    fi[2] = k;
+    fi[3] = e;
+    var o = 64;
+    // the arrays of `fi`, in the order of the header
+    fi[10] = o;
+    o = o + m;
+    fi[11] = o;
+    o = o + m;
+    fi[12] = o;
+    o = o + m;
+    fi[13] = o;
+    o = o + p;
+    fi[14] = o;
+    o = o + m;
+    fi[15] = o;
+    o = o + m;
+    fi[16] = o;
+    o = o + m;
+    fi[17] = o;
+    o = o + p;
+    fi[18] = o;
+    o = o + m;
+    fi[19] = o;
+    o = o + m;
+    fi[20] = o;
+    o = o + m;
+    fi[21] = o;
+    o = o + m;
+    fi[22] = o;
+    o = o + m + 1;
+    fi[23] = o;
+    o = o + p;
+    fi[24] = o;
+    o = o + m + 1;
+    fi[25] = o;
+    o = o + p;
+    fi[26] = o;
+    o = o + m + 1;
+    fi[27] = o;
+    o = o + p;
+    fi[28] = o;
+    o = o + m;
+    fi[29] = o;
+    o = o + m;
+    fi[30] = o;
+    o = o + m;
+    fi[31] = o;
+    o = o + m;
+    fi[32] = o;
+    o = o + m;
+    fi[33] = o;
+    o = o + m;
+    fi[34] = o;
+    o = o + m;
+    fi[35] = o;
+    o = o + k + 1;
+    fi[36] = o;
+    o = o + k;
+    fi[37] = o;
+    o = o + e;
+    fi[38] = o;
+    o = o + m;
+    // the arrays of `ff`
+    var q = 8;
+    fi[40] = q;
+    q = q + p;
+    fi[41] = q;
+    q = q + p;
+    fi[42] = q;
+    q = q + p;
+    fi[43] = q;
+    q = q + p;
+    fi[44] = q;
+    q = q + m;
+    fi[45] = q;
+    q = q + m;
+    fi[46] = q;
+    q = q + m;
+    fi[47] = q;
+    q = q + e;
+    fi[48] = q;
+    return 0;
+}
+
+// The index in the row pool of the entry (i, j), or -1.
+fn find_in_row[&a](fi: &a [int], i: int, j: int) -> [] int {
+    let s = fi[fi[10] + i];
+    let e = s + fi[fi[11] + i];
+    let ri = fi[13];
+    var t = s;
+    while t < e {
+        if fi[ri + t] == j {
+            return t;
+        }
+        t = t + 1;
+    }
+    return 0 - 1;
+}
+
+// The largest magnitude in the active column j.
+fn col_max[&a, &b](fi: &a [int], ff: &b [float], j: int) -> [] float {
+    let s = fi[fi[14] + j];
+    let e = s + fi[fi[15] + j];
+    let ci = fi[17];
+    let rv = fi[40];
+    var best = 0.0;
+    var t = s;
+    while t < e {
+        let at = find_in_row(fi, fi[ci + t], j);
+        if at >= 0 {
+            let v = mag(ff[rv + at]);
+            if v > best {
+                best = v;
+            }
+        }
+        t = t + 1;
+    }
+    return best;
+}
+
+// Removes row i from the pattern of column j.
+fn col_remove[&a](fi: &!a [int], j: int, i: int) -> [] int {
+    let s = fi[fi[14] + j];
+    let l = fi[fi[15] + j];
+    let ci = fi[17];
+    var t = s;
+    while t < s + l {
+        if fi[ci + t] == i {
+            fi[ci + t] = fi[ci + s + l - 1];
+            fi[fi[15] + j] = l - 1;
+            return 0;
+        }
+        t = t + 1;
+    }
+    return 0;
+}
+
+// Gives row i room for more entries, at the end of the row pool; 2 when the pool is full.
+fn grow_row[&a, &b](fi: &!a [int], ff: &!b [float], i: int) -> [] int {
+    let nc = 2 * fi[fi[12] + i] + 4;
+    let top = fi[8];
+    if top + nc > fi[1] {
+        return 2;
+    }
+    let s = fi[fi[10] + i];
+    let l = fi[fi[11] + i];
+    let ri = fi[13];
+    let rv = fi[40];
+    var t = 0;
+    while t < l {
+        fi[ri + top + t] = fi[ri + s + t];
+        ff[rv + top + t] = ff[rv + s + t];
+        t = t + 1;
+    }
+    fi[fi[10] + i] = top;
+    fi[fi[12] + i] = nc;
+    fi[8] = top + nc;
+    return 0;
+}
+
+fn grow_col[&a](fi: &!a [int], j: int) -> [] int {
+    let nc = 2 * fi[fi[16] + j] + 4;
+    let top = fi[9];
+    if top + nc > fi[1] {
+        return 2;
+    }
+    let s = fi[fi[14] + j];
+    let l = fi[fi[15] + j];
+    let ci = fi[17];
+    var t = 0;
+    while t < l {
+        fi[ci + top + t] = fi[ci + s + t];
+        t = t + 1;
+    }
+    fi[fi[14] + j] = top;
+    fi[fi[16] + j] = nc;
+    fi[9] = top + nc;
+    return 0;
+}
+
+// Factorises B (m columns in column form). Returns 0, 1 (singular: no pivot of magnitude 1e-11 remains), or 2 (a pool is full).
+// Afterwards `ftran` and `btran` solve with B, and `push_eta` records basis changes.
+pub fn factor[&a, &b, &c, &d, &e](fi: &!a [int], ff: &!b [float], bstart: &c [int], bind: &d [int], bval: &e [float]) -> [] int {
+    let m = fi[0];
+    let pool = fi[1];
+    let o_rs = fi[10];
+    let o_rl = fi[11];
+    let o_rc = fi[12];
+    let o_ri = fi[13];
+    let o_cs = fi[14];
+    let o_cl = fi[15];
+    let o_cc = fi[16];
+    let o_ci = fi[17];
+    let o_pr = fi[18];
+    let o_pc = fi[19];
+    let o_rk = fi[20];
+    let o_ck = fi[21];
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_us = fi[24];
+    let o_uc = fi[25];
+    let o_ucs = fi[26];
+    let o_ucr = fi[27];
+    let o_ac = fi[28];
+    let o_ap = fi[29];
+    let o_cst = fi[30];
+    let o_rst = fi[31];
+    let o_cin = fi[32];
+    let o_rin = fi[33];
+    let o_mk = fi[34];
+    let o_es = fi[35];
+    let o_pm = fi[38];
+    let o_rv = fi[40];
+    let o_lv = fi[41];
+    let o_uv = fi[42];
+    let o_ucv = fi[43];
+    let o_pv = fi[44];
+    let o_w1 = fi[45];
+    fi[4] = 0;
+    fi[5] = 0;
+    fi[o_es] = 0;
+    // the rows: counts, room, then the entries
+    var i = 0;
+    while i < m {
+        fi[o_rl + i] = 0;
+        i = i + 1;
+    }
+    var j = 0;
+    while j < m {
+        var t = bstart[j];
+        while t < bstart[j + 1] {
+            fi[o_rl + bind[t]] = fi[o_rl + bind[t]] + 1;
+            t = t + 1;
+        }
+        j = j + 1;
+    }
+    var top = 0;
+    i = 0;
+    while i < m {
+        fi[o_rs + i] = top;
+        fi[o_rc + i] = fi[o_rl + i] + 2;
+        top = top + fi[o_rc + i];
+        fi[o_rl + i] = 0;
+        i = i + 1;
+    }
+    var ctop = 0;
+    j = 0;
+    while j < m {
+        fi[o_cs + j] = ctop;
+        fi[o_cl + j] = bstart[j + 1] - bstart[j];
+        fi[o_cc + j] = fi[o_cl + j] + 2;
+        ctop = ctop + fi[o_cc + j];
+        j = j + 1;
+    }
+    if top > pool || ctop > pool {
+        return r_pool();
+    }
+    fi[8] = top;
+    fi[9] = ctop;
+    j = 0;
+    while j < m {
+        var t = bstart[j];
+        while t < bstart[j + 1] {
+            let r = bind[t];
+            let at = fi[o_rs + r] + fi[o_rl + r];
+            fi[o_ri + at] = j;
+            ff[o_rv + at] = bval[t];
+            fi[o_rl + r] = fi[o_rl + r] + 1;
+            fi[o_ci + fi[o_cs + j] + t - bstart[j]] = r;
+            t = t + 1;
+        }
+        j = j + 1;
+    }
+    // the active columns, the singleton stacks, the markers
+    var cst = 0;
+    var rst = 0;
+    i = 0;
+    while i < m {
+        fi[o_ac + i] = i;
+        fi[o_ap + i] = i;
+        fi[o_rk + i] = 0 - 1;
+        fi[o_ck + i] = 0 - 1;
+        fi[o_mk + i] = 0 - 1;
+        fi[o_pm + i] = 0;
+        fi[o_cin + i] = 0;
+        fi[o_rin + i] = 0;
+        if fi[o_cl + i] == 1 {
+            fi[o_cst + cst] = i;
+            cst = cst + 1;
+            fi[o_cin + i] = 1;
+        }
+        if fi[o_rl + i] == 1 {
+            fi[o_rst + rst] = i;
+            rst = rst + 1;
+            fi[o_rin + i] = 1;
+        }
+        i = i + 1;
+    }
+    var nact = m;
+    var lnz = 0;
+    var unz = 0;
+    var stamp = 0;
+    var k = 0;
+    while k < m {
+        var p = 0 - 1;
+        var q = 0 - 1;
+        var pv = 0.0;
+        // a column with one entry: no elimination, and no threshold to meet
+        while p < 0 && cst > 0 {
+            cst = cst - 1;
+            let jj = fi[o_cst + cst];
+            fi[o_cin + jj] = 0;
+            if fi[o_ck + jj] < 0 && fi[o_cl + jj] == 1 {
+                let ii = fi[o_ci + fi[o_cs + jj]];
+                let at = find_in_row(fi, ii, jj);
+                let v = ff[o_rv + at];
+                if mag(v) > tiny() {
+                    p = ii;
+                    q = jj;
+                    pv = v;
+                }
+            }
+        }
+        // a row with one entry: the column's other entries become multipliers, so the threshold applies
+        while p < 0 && rst > 0 {
+            rst = rst - 1;
+            let ii = fi[o_rst + rst];
+            fi[o_rin + ii] = 0;
+            if fi[o_rk + ii] < 0 && fi[o_rl + ii] == 1 {
+                let jj = fi[o_ri + fi[o_rs + ii]];
+                let v = ff[o_rv + fi[o_rs + ii]];
+                if mag(v) > tiny() && mag(v) >= threshold() * col_max(fi, ff, jj) {
+                    p = ii;
+                    q = jj;
+                    pv = v;
+                }
+            }
+        }
+        // the general case: among the columns of fewest entries (at most four of them), the entry of least (row count - 1)(column count - 1) that meets the threshold
+        if p < 0 {
+            var cmin = m + 1;
+            var a = 0;
+            while a < nact {
+                let c = fi[o_cl + fi[o_ac + a]];
+                if c < cmin {
+                    cmin = c;
+                }
+                a = a + 1;
+            }
+            if cmin == 0 {
+                return r_singular();
+            }
+            var tried = 0;
+            var bestc = 0;
+            a = 0;
+            while a < nact && tried < 4 {
+                let jj = fi[o_ac + a];
+                if fi[o_cl + jj] == cmin {
+                    tried = tried + 1;
+                    let vmax = col_max(fi, ff, jj);
+                    if vmax > tiny() {
+                        var u = 0;
+                        while u < cmin {
+                            let ii = fi[o_ci + fi[o_cs + jj] + u];
+                            let v = ff[o_rv + find_in_row(fi, ii, jj)];
+                            if mag(v) >= threshold() * vmax && mag(v) > tiny() {
+                                let cost = (fi[o_rl + ii] - 1) * (cmin - 1);
+                                if p < 0 || cost < bestc || cost == bestc && mag(v) > mag(pv) {
+                                    p = ii;
+                                    q = jj;
+                                    pv = v;
+                                    bestc = cost;
+                                }
+                            }
+                            u = u + 1;
+                        }
+                    }
+                }
+                a = a + 1;
+            }
+        }
+        if p < 0 {
+            return r_singular();
+        }
+        // the pivot is (p, q) with value pv: the pivot row becomes row k of U, and leaves the columns' patterns
+        let rs0 = fi[o_rs + p];
+        let rl0 = fi[o_rl + p];
+        fi[o_us + k] = unz;
+        var t = 0;
+        while t < rl0 {
+            let jj = fi[o_ri + rs0 + t];
+            if jj != q {
+                if unz >= pool {
+                    return r_pool();
+                }
+                fi[o_uc + unz] = jj;
+                ff[o_uv + unz] = ff[o_rv + rs0 + t];
+                unz = unz + 1;
+                ff[o_w1 + jj] = ff[o_rv + rs0 + t];
+                fi[o_pm + jj] = k + 1;
+                col_remove(fi, jj, p);
+                if fi[o_cl + jj] == 1 && fi[o_cin + jj] == 0 {
+                    fi[o_cst + cst] = jj;
+                    cst = cst + 1;
+                    fi[o_cin + jj] = 1;
+                }
+            }
+            t = t + 1;
+        }
+        fi[o_us + k + 1] = unz;
+        let apos = fi[o_ap + q];
+        let alast = fi[o_ac + nact - 1];
+        fi[o_ac + apos] = alast;
+        fi[o_ap + alast] = apos;
+        nact = nact - 1;
+        fi[o_rk + p] = k;
+        fi[o_ck + q] = k;
+        // the other rows of the pivot column: multiplier, then row i = row i - multiplier * pivot row
+        fi[o_ls + k] = lnz;
+        let cs0 = fi[o_cs + q];
+        let cl0 = fi[o_cl + q];
+        var u = 0;
+        while u < cl0 {
+            let ii = fi[o_ci + cs0 + u];
+            if ii != p {
+                let t1 = find_in_row(fi, ii, q);
+                let rsi = fi[o_rs + ii];
+                let rli = fi[o_rl + ii];
+                let l = ff[o_rv + t1] / pv;
+                let lastt = rsi + rli - 1;
+                fi[o_ri + t1] = fi[o_ri + lastt];
+                ff[o_rv + t1] = ff[o_rv + lastt];
+                fi[o_rl + ii] = rli - 1;
+                if lnz >= pool {
+                    return r_pool();
+                }
+                fi[o_lr + lnz] = ii;
+                ff[o_lv + lnz] = l;
+                lnz = lnz + 1;
+                stamp = stamp + 1;
+                var s2 = rsi;
+                while s2 < rsi + rli - 1 {
+                    let jj = fi[o_ri + s2];
+                    if fi[o_pm + jj] == k + 1 {
+                        ff[o_rv + s2] = ff[o_rv + s2] - l * ff[o_w1 + jj];
+                        fi[o_mk + jj] = stamp;
+                    }
+                    s2 = s2 + 1;
+                }
+                t = 0;
+                while t < rl0 {
+                    let jj = fi[o_ri + rs0 + t];
+                    if jj != q && fi[o_mk + jj] != stamp {
+                        if fi[o_rl + ii] == fi[o_rc + ii] {
+                            let g = grow_row(fi, ff, ii);
+                            if g != 0 {
+                                return g;
+                            }
+                        }
+                        let at = fi[o_rs + ii] + fi[o_rl + ii];
+                        fi[o_ri + at] = jj;
+                        ff[o_rv + at] = 0.0 - l * ff[o_w1 + jj];
+                        fi[o_rl + ii] = fi[o_rl + ii] + 1;
+                        if fi[o_cl + jj] == fi[o_cc + jj] {
+                            let g = grow_col(fi, jj);
+                            if g != 0 {
+                                return g;
+                            }
+                        }
+                        fi[o_ci + fi[o_cs + jj] + fi[o_cl + jj]] = ii;
+                        fi[o_cl + jj] = fi[o_cl + jj] + 1;
+                    }
+                    t = t + 1;
+                }
+                if fi[o_rl + ii] == 1 && fi[o_rin + ii] == 0 {
+                    fi[o_rst + rst] = ii;
+                    rst = rst + 1;
+                    fi[o_rin + ii] = 1;
+                }
+            }
+            u = u + 1;
+        }
+        fi[o_ls + k + 1] = lnz;
+        fi[o_pr + k] = p;
+        fi[o_pc + k] = q;
+        ff[o_pv + k] = pv;
+        k = k + 1;
+    }
+    fi[6] = lnz;
+    fi[7] = unz;
+    // U in pivot numbers, and its copy by columns
+    var e2 = 0;
+    while e2 < unz {
+        fi[o_uc + e2] = fi[o_ck + fi[o_uc + e2]];
+        e2 = e2 + 1;
+    }
+    i = 0;
+    while i <= m {
+        fi[o_ucs + i] = 0;
+        i = i + 1;
+    }
+    e2 = 0;
+    while e2 < unz {
+        fi[o_ucs + fi[o_uc + e2] + 1] = fi[o_ucs + fi[o_uc + e2] + 1] + 1;
+        e2 = e2 + 1;
+    }
+    i = 0;
+    while i < m {
+        fi[o_ucs + i + 1] = fi[o_ucs + i + 1] + fi[o_ucs + i];
+        fi[o_mk + i] = 0;
+        i = i + 1;
+    }
+    k = 0;
+    while k < m {
+        e2 = fi[o_us + k];
+        while e2 < fi[o_us + k + 1] {
+            let c = fi[o_uc + e2];
+            let at = fi[o_ucs + c] + fi[o_mk + c];
+            fi[o_ucr + at] = k;
+            ff[o_ucv + at] = ff[o_uv + e2];
+            fi[o_mk + c] = fi[o_mk + c] + 1;
+            e2 = e2 + 1;
+        }
+        k = k + 1;
+    }
+    return r_ok();
+}
+
+// Solves B x = b. `x` holds b (by row) on entry and the answer (by position) on return; the etas pushed since the factorisation are applied.
+pub fn ftran[&a, &b, &c](fi: &a [int], ff: &!b [float], x: &!c [float]) -> [] int {
+    let m = fi[0];
+    let o_pr = fi[18];
+    let o_pc = fi[19];
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_ucs = fi[26];
+    let o_ucr = fi[27];
+    let o_lv = fi[41];
+    let o_ucv = fi[43];
+    let o_pv = fi[44];
+    let o_w1 = fi[45];
+    var k = 0;
+    while k < m {
+        let t = x[fi[o_pr + k]];
+        if t != 0.0 {
+            var e = fi[o_ls + k];
+            while e < fi[o_ls + k + 1] {
+                x[fi[o_lr + e]] = x[fi[o_lr + e]] - ff[o_lv + e] * t;
+                e = e + 1;
+            }
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < m {
+        ff[o_w1 + k] = x[fi[o_pr + k]];
+        k = k + 1;
+    }
+    k = m - 1;
+    while k >= 0 {
+        if ff[o_w1 + k] != 0.0 {
+            let xk = ff[o_w1 + k] / ff[o_pv + k];
+            ff[o_w1 + k] = xk;
+            var e = fi[o_ucs + k];
+            while e < fi[o_ucs + k + 1] {
+                ff[o_w1 + fi[o_ucr + e]] = ff[o_w1 + fi[o_ucr + e]] - ff[o_ucv + e] * xk;
+                e = e + 1;
+            }
+        }
+        k = k - 1;
+    }
+    k = 0;
+    while k < m {
+        x[fi[o_pc + k]] = ff[o_w1 + k];
+        k = k + 1;
+    }
+    // the etas, oldest first: v[r] = v[r] / alpha_r, then v[j] = v[j] - alpha_j v[r]
+    let o_es = fi[35];
+    let o_ep = fi[36];
+    let o_ei = fi[37];
+    let o_ev = fi[47];
+    let o_ea = fi[48];
+    var n = 0;
+    while n < fi[4] {
+        let r = fi[o_ep + n];
+        let t = x[r] / ff[o_ea + n];
+        x[r] = t;
+        if t != 0.0 {
+            var e = fi[o_es + n];
+            while e < fi[o_es + n + 1] {
+                x[fi[o_ei + e]] = x[fi[o_ei + e]] - ff[o_ev + e] * t;
+                e = e + 1;
+            }
+        }
+        n = n + 1;
+    }
+    return 0;
+}
+
+// Solves y B = c. `y` holds c (by position) on entry and the answer (by row) on return.
+pub fn btran[&a, &b, &c](fi: &a [int], ff: &!b [float], y: &!c [float]) -> [] int {
+    let m = fi[0];
+    let o_pr = fi[18];
+    let o_pc = fi[19];
+    let o_ls = fi[22];
+    let o_lr = fi[23];
+    let o_us = fi[24];
+    let o_uc = fi[25];
+    let o_lv = fi[41];
+    let o_uv = fi[42];
+    let o_pv = fi[44];
+    let o_w1 = fi[45];
+    let o_es = fi[35];
+    let o_ep = fi[36];
+    let o_ei = fi[37];
+    let o_ev = fi[47];
+    let o_ea = fi[48];
+    // the etas, newest first: c[r] = (c[r] - sum_j alpha_j c[j]) / alpha_r
+    var n = fi[4] - 1;
+    while n >= 0 {
+        let r = fi[o_ep + n];
+        var s = y[r];
+        var e = fi[o_es + n];
+        while e < fi[o_es + n + 1] {
+            s = s - ff[o_ev + e] * y[fi[o_ei + e]];
+            e = e + 1;
+        }
+        y[r] = s / ff[o_ea + n];
+        n = n - 1;
+    }
+    var k = 0;
+    while k < m {
+        ff[o_w1 + k] = y[fi[o_pc + k]];
+        k = k + 1;
+    }
+    k = 0;
+    while k < m {
+        if ff[o_w1 + k] != 0.0 {
+            let z = ff[o_w1 + k] / ff[o_pv + k];
+            ff[o_w1 + k] = z;
+            var e = fi[o_us + k];
+            while e < fi[o_us + k + 1] {
+                ff[o_w1 + fi[o_uc + e]] = ff[o_w1 + fi[o_uc + e]] - ff[o_uv + e] * z;
+                e = e + 1;
+            }
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < m {
+        y[fi[o_pr + k]] = ff[o_w1 + k];
+        k = k + 1;
+    }
+    k = m - 1;
+    while k >= 0 {
+        var s = 0.0;
+        var e = fi[o_ls + k];
+        while e < fi[o_ls + k + 1] {
+            s = s + ff[o_lv + e] * y[fi[o_lr + e]];
+            e = e + 1;
+        }
+        y[fi[o_pr + k]] = y[fi[o_pr + k]] - s;
+        k = k - 1;
+    }
+    return 0;
+}
+
+// Records the replacement of the column at position r by a column whose FTRAN (with the etas so far) is `alpha`. Returns 0, or 3 when the eta file is full (refactorise).
+pub fn push_eta[&a, &b, &c](fi: &!a [int], ff: &!b [float], r: int, alpha: &c [float]) -> [] int {
+    let m = fi[0];
+    let n = fi[4];
+    if n >= fi[2] {
+        return r_eta_full();
+    }
+    var cnt = 0;
+    var j = 0;
+    while j < m {
+        if j != r && mag(alpha[j]) > 1e-14 {
+            cnt = cnt + 1;
+        }
+        j = j + 1;
+    }
+    var at = fi[5];
+    if at + cnt > fi[3] {
+        return r_eta_full();
+    }
+    j = 0;
+    while j < m {
+        if j != r && mag(alpha[j]) > 1e-14 {
+            fi[fi[37] + at] = j;
+            ff[fi[47] + at] = alpha[j];
+            at = at + 1;
+        }
+        j = j + 1;
+    }
+    fi[fi[36] + n] = r;
+    ff[fi[48] + n] = alpha[r];
+    fi[fi[35] + n + 1] = at;
+    fi[4] = n + 1;
+    fi[5] = at;
+    return 0;
+}
+
+// What a factorisation holds: nnz(L) and nnz(U) off the diagonal.
+pub fn lu_nnz[&a](fi: &a [int]) -> [] int {
+    return fi[6] + fi[7] + fi[0];
+}
+
+// The largest multiplier of L in magnitude: at most 1 / threshold when every pivot met the threshold.
+pub fn l_max[&a, &b](fi: &a [int], ff: &b [float]) -> [] float {
+    var best = 0.0;
+    var e = 0;
+    while e < fi[6] {
+        if mag(ff[fi[41] + e]) > best {
+            best = mag(ff[fi[41] + e]);
+        }
+        e = e + 1;
+    }
+    return best;
+}

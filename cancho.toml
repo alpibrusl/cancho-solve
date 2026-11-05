@@ -7,3 +7,9 @@ name = "solve"
 sources = ["lib/model", "lib/lp", "tools/solve"]
 std = true
 out = "build/solve"
+
+[[bin]]
+name = "sparsetest"
+sources = ["lib/lp", "lib/model", "tools/sparsetest"]
+std = true
+out = "build/sparsetest"
