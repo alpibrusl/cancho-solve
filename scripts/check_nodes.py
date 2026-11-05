@@ -12,7 +12,7 @@ CFGS = {"default": [], "depth+fractional": ["--node-select", "depth", "--branchi
         "whole-cut off": ["--experiment", "1"], "no rounding": ["--experiment", "2"], "far child": ["--experiment", "4"]}
 INSTS = {"mkp 50x10": lpgen.mkp(7, 50, 10), "general int 20x20": lpgen.random_mip(7, 20, 20, 0.4, 1.0), "bin packing 8/4": lpgen.bin_packing_lite(7, 8, 4),
          "knapsack 100": lpgen.knapsack(7, 100), "set cover 120x200": lpgen.set_cover(7, 120, 200, 0.05), "mixed 30x40": lpgen.random_mip(7, 30, 40, 0.3, 0.5)}
-EXACT = {
+EXACT_DENSE = {
     ('mkp 50x10', 'default'): (263, 1287),
     ('mkp 50x10', 'depth+fractional'): (269, 1286),
     ('mkp 50x10', 'best+fractional'): (269, 1286),
@@ -57,7 +57,18 @@ EXACT = {
     ('mixed 30x40', 'far child'): (1039, 6244),
 }
 
+# The sparse engine's table (docs/design.md 19.6): SOLVE_METHOD=sparse selects it; SOLVE_METHOD=dense or unset selects the dense one (the default of this gate runs `--method dense`
+# explicitly, since `auto` may pick either engine). Recorded with `SOLVE_METHOD=sparse --print` once the engine exists; an empty table fails the gate.
+EXACT_SPARSE = {
+}
+METHOD = os.environ.get("SOLVE_METHOD", "dense")
+os.environ["SOLVE_METHOD"] = METHOD
+EXACT = EXACT_SPARSE if METHOD == "sparse" else EXACT_DENSE
+
 bad = 0
+if not EXACT:
+    bad += 1
+    print("FAIL: no counts are recorded for the sparse engine")
 for (iname, cname), (nodes, iters) in EXACT.items():
     p, _ = run_solve(SOLVE, ["run"] + CFGS[cname], INSTS[iname])
     r = json.loads(p.stdout)
