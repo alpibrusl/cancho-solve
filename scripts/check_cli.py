@@ -68,6 +68,29 @@ if p.returncode != 2 or json.loads(p.stderr)["error"] != "solve.usage":
     bad += 1
     print("FAIL bad flag")
 
+# --method (design.md 18.3.2): both methods on the small models and their mutations never panic; an unknown method or a missing value is a usage error
+for n, src in enumerate(files):
+    if len(src) < 600:
+        for _ in range(15):
+            b = bytearray(src)
+            for _ in range(rng.randint(1, 3)):
+                if b:
+                    b[rng.randrange(len(b))] = rng.choice(b"();:.,*/+-<>=[]{} \n\t\0\xff0129aevx")
+            run(bytes(b), f"sparse run file {n} mutation", ("run", "--relax", "--method", "sparse"))
+for flags in (["--method"], ["--method", "fast"], ["--method", "sparse", "--method"], ["--method=sparse"]):
+    runs += 1
+    p = subprocess.run([SOLVE, "run", *flags], input=lp, capture_output=True)
+    if p.returncode != 2 or json.loads(p.stderr)["error"] != "solve.usage":
+        bad += 1
+        print(f"FAIL bad method flags {flags}")
+for limit, want_status, want_iters, want_code in [(0, "unknown", 0, 1), (1, "unknown", 1, 1), (2, "optimal", 2, 0)]:
+    runs += 1
+    p = subprocess.run([SOLVE, "run", "--method", "sparse", "--iteration-limit", str(limit)], input=lp, capture_output=True)
+    r = json.loads(p.stdout)
+    if p.returncode != want_code or r["status"] != want_status or r["stats"]["iterations"] != want_iters:
+        bad += 1
+        print(f"FAIL sparse iteration limit {limit}: status {p.returncode}, {r['status']}, {r['stats']}")
+
 # one variable too many
 run(b"".join(b"var v%d : bool;\n" % i for i in range(16400)), "16400 variables")
 # very deep parentheses

@@ -24,7 +24,19 @@ EXACT = [
     ("assignment 30x30, seed 1", lpgen.assignment(1, 30), 63),
     ("transportation 20x40, seed 9", lpgen.transportation(9, 20, 40), 59),
 ]
+# The sparse solver also reports its refactorisations: the first, one for each 64 iterations, and the one that confirms the optimum (design.md 18.3.2). Exact, because the
+# interval, the refactorisation before "optimal" and the eta file's capacity are each a place where a change leaves every answer right and only moves this number
+# (found by the mutants "optimal is declared without a refactorisation", "no refactorisation at the interval", "a refactorisation at every iteration").
+REFACTORS = {"random dense LP 200x400": 7, "random dense LP 100x200": 4, "multi-knapsack 1000 items, 50 rows": 4, "assignment 100x100": 5,
+             "assignment 30x30, seed 1": 2, "transportation 20x40, seed 9": 2}
 bad = 0
+def check_refactors(name, result):
+    global bad
+    if METHOD == "sparse" and name in REFACTORS:
+        got = result["stats"].get("refactorisations")
+        if got != REFACTORS[name]:
+            bad += 1
+            print(f"FAIL {name}: {got} refactorisations, exactly {REFACTORS[name]} expected")
 for name, text, want in EXACT:
     p, _ = run_solve(SOLVE, ["run", "--relax"], text)
     it = json.loads(p.stdout)["stats"]["iterations"]
@@ -33,6 +45,7 @@ for name, text, want in EXACT:
         print(f"FAIL {name}: {it} iterations, exactly {want} expected, status {p.returncode}")
     else:
         print(f"ok   {name}: {it} iterations (exact)")
+    check_refactors(name, json.loads(p.stdout))
 for name, text, bound_dense, bound_sparse in CASES:
     bound = bound_sparse if METHOD == "sparse" else bound_dense
     p, _ = run_solve(SOLVE, ["run", "--relax"], text)
@@ -43,5 +56,6 @@ for name, text, bound_dense, bound_sparse in CASES:
         print(f"FAIL {name}: {it} iterations, bound {bound}, status {p.returncode}")
     else:
         print(f"ok   {name}: {it} iterations (bound {bound})")
+    check_refactors(name, r)
 print("iteration gate:", "FAILED" if bad else "passed", f"({len(CASES) + len(EXACT)} cases, {bad} failures)")
 sys.exit(1 if bad else 0)

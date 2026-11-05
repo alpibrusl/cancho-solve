@@ -3,7 +3,7 @@
 fixed-seed models of every family, small and large (the large ones need many refactorisations: more than 64 iterations), and must agree on the status and, when optimal, on
 the objective to 1e-6 relative; each printed solution must re-check (`verified`, and re-evaluated here against the expanded model); and with an iteration limit both must
 stop with `unknown`. The two share no code below the model checker. Usage: SOLVE=build/solve python3 scripts/check_dense_vs_sparse.py"""
-import json, os, sys
+import json, os, random, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import lpgen
 from hs import violation
@@ -27,6 +27,23 @@ for seed in range(8):
 for seed in range(6):
     cases.append((f"mkp {seed}", lpgen.mkp(300 + seed, 100 + 150 * seed, 5 + 6 * seed)))
 
+def scaled_lp(seed, m, n, spread):
+    """Rows and columns scaled by 10^(+-spread): coefficients over 6 orders of magnitude at spread 3 (the pivot-disagreement and refactorisation paths see real rounding)."""
+    r = random.Random(seed)
+    names = [f"v{j}" for j in range(n)]
+    cs = [10.0 ** r.uniform(-spread, spread) for _ in range(n)]
+    lines = [f"var {v} : real 0..{r.randint(1, 9)};" for v in names]
+    lines.append("minimize " + " + ".join(f"{r.uniform(-1, 1) * cs[j]:.6g}*{names[j]}" for j in range(n)) + ";")
+    lines.append("subject to")
+    for i in range(m):
+        rs = 10.0 ** r.uniform(-spread, spread)
+        terms = [(j, r.uniform(-1, 1) * rs * cs[j]) for j in range(n) if r.random() < 0.4] or [(0, 1.0)]
+        lines.append(f"  c{i}: " + " + ".join(f"{a:.6g}*{names[j]}" for j, a in terms) + f" <= {r.uniform(0, 3) * rs * sum(abs(a) for _, a in terms):.6g};")
+    return "\n".join(lines) + "\n"
+
+for spread in (1, 2, 3):
+    for seed in range(4):
+        cases.append((f"scaled {spread}.{seed}", scaled_lp(seed, 150, 300, spread)))
 bad = 0
 refac = 0
 for name, text in cases:
