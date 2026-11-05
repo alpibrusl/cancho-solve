@@ -51,7 +51,7 @@ def shorten_x(line):
     m = re.search(r'"x":\{([^}]*)\}', line)
     if not m:
         return line
-    items = m.group(1).split(",")
+    items = re.split(r',(?=")', m.group(1))
     if len(items) <= 8:
         return line
     kept = [i for i in items if not i.endswith(":0.0")]
@@ -193,6 +193,34 @@ def fig_depots():
     return "".join(svg)
 
 
+def fig_ev():
+    sol, ex, text = solved("ev_depot.sol")
+    p = params(text)
+    V, T = int(p["V"]), int(p["T"])
+    price = p["price"]
+    hours = ["22", "23", "00", "01", "02", "03", "04", "05"]
+    cw, ch, x0, y0 = 54, 34, 118, 44
+    svg = ['<svg viewBox="0 0 %d %d" role="img" aria-labelledby="fe-t"><title id="fe-t">Power drawn by each vehicle in each hour of the night, against the price of the hour; most charging falls in the cheap hours after midnight</title>' % (x0 + T * cw + 20, y0 + V * ch + 72)]
+    for t in range(T):
+        svg.append('<text class="tk" x="%d" y="14" text-anchor="middle">%s:00</text><text class="%s" x="%d" y="32" text-anchor="middle">%s</text>' % (x0 + t * cw + cw // 2, hours[t], "lb" if price[t] <= 0.12 else "tk", x0 + t * cw + cw // 2, num(price[t])))
+    svg.append('<text class="tk" x="0" y="32">price per kWh</text>')
+    for v in range(V):
+        svg.append('<text class="tk" x="0" y="%d">vehicle %d</text>' % (y0 + v * ch + ch // 2 + 4, v))
+        for t in range(T):
+            q = sol["x"]["charge[%d,%d]" % (v, t)]
+            avail = p["avail"][v * T + t] > 0.5
+            if q > 1e-9:
+                svg.append('<rect class="fb" style="opacity:%.2f" x="%d" y="%d" width="%d" height="%d" rx="4"/><text class="in" x="%d" y="%d" text-anchor="middle">%s</text>' % (0.35 + 0.6 * q / 11.0, x0 + t * cw + 2, y0 + v * ch + 2, cw - 4, ch - 4, x0 + t * cw + cw // 2, y0 + v * ch + ch // 2 + 4, num(round(q, 3))))
+            else:
+                svg.append('<rect class="%s" x="%d" y="%d" width="%d" height="%d" rx="4"/>' % ("ft" if avail else "fo", x0 + t * cw + 2, y0 + v * ch + 2, cw - 4, ch - 4))
+    tot = [sum(sol["x"]["charge[%d,%d]" % (v, t)] for v in range(V)) for t in range(T)]
+    svg.append('<text class="tk" x="0" y="%d">site total kW</text>' % (y0 + V * ch + 22))
+    for t in range(T):
+        svg.append('<text class="lb" x="%d" y="%d" text-anchor="middle">%s</text>' % (x0 + t * cw + cw // 2, y0 + V * ch + 22, num(round(tot[t], 3))))
+    svg.append('<text class="tk" x="0" y="%d">filled: kW drawn (darker = more); outlined: plugged in, not charging;</text><text class="tk" x="0" y="%d">dashed: not plugged in. Total cost %s.</text></svg>' % (y0 + V * ch + 46, y0 + V * ch + 62, "\u20ac" + num(round(sol["objective"], 2))))
+    return "".join(svg)
+
+
 # ---------------------------------------------------------------- page chrome
 NAV = [("index.html", "Home"), ("examples.html", "Examples"), ("stories.html", "Stories")]
 
@@ -319,7 +347,7 @@ def build_index():
 
 <section class="sec" id="stories"><div class="wrap">
   <h2>Stories, from a bakery to a refusal</h2>
-  <p class="lead">A bakery, a courier van, a night rota, two depots and a shop floor that says no: each asks a little more of <code>solve</code>, and every number and figure is drawn from a run.</p>
+  <p class="lead">A bakery, a courier van, a night rota, two depots, an electric-vehicle depot overnight and a shop floor that says no: each asks a little more of <code>solve</code>, and every number and figure is drawn from a run.</p>
   <p class="cta"><a class="btn primary" href="stories.html">Read the stories</a><a class="btn" href="examples.html">See every command</a></p>
 </div></section>
 
@@ -474,16 +502,36 @@ STORIES = [
      "A wholesaler has two depots, holding 60 and 50 crates, and three shops that need 30, 40 and 25. Crates can be split between shops. A crate costs a different amount on each route.",
      "A transportation LP, with real variables: nothing to branch on. The cheapest plan sends depot 0 to shop 0 and shop 2, and depot 1 to shop 1 and shop 2. The figure draws the flows to scale.",
      "fig_depots"),
+    ("ev", "ev_depot.sol", "An overnight charging schedule for an EV depot",
+     "A depot parks six electric vehicles overnight, between 22:00 and 06:00, in eight one-hour slots. Each plugs in at its own arrival time, must hold its energy by its departure, and draws at most 11 kW. The depot has four chargers, so at most four vehicles charge in a slot, and a 40 kW grid connection. Power is cheaper after midnight. Which vehicle charges when, so that every one leaves full and the bill is lowest?",
+     "This is a mixed-integer model of 96 variables and 118 constraints: 48 real <code>charge</code> variables, and 48 yes-or-no <code>on</code> variables that say a vehicle holds a charger in a slot, tied together by <code>charge &lt;= 11 * on</code>. The plan buys nothing in the expensive hours (22:00, 23:00 and 05:00): it fills the four hours from 01:00 to 05:00 to the 40 kW limit and takes the remaining 26 kW in the 00:00 hour, which is why the figure&rsquo;s site totals read 26, 40, 40, 40, 40. HiGHS, run on the same flat model (<code>solve expand</code>), prints the same optimum, 23.08.",
+     "fig_ev"),
 ]
+
+
+def ev_extras():
+    """What-ifs on the depot: fewer chargers. The relaxation, a harder search and an impossible plan, each from a run."""
+    l4, _, _, _ = cmd("e", ["run", "--relax"], "ev_depot.sol")
+    l3, _, _, _ = cmd("e", ["run"], "ev_depot_3.sol")
+    l3r, _, _, _ = cmd("e", ["run", "--relax"], "ev_depot_3.sol")
+    l2, _, _, _ = cmd("e", ["run"], "ev_depot_2.sol")
+    keep = lambda lines: [(c, tx if len(tx) < 260 else tx[:200] + " \u2026 " + tx[tx.rindex(',"verified"') if ',"verified"' in tx else tx.rindex(',"stats"'):]) if c == "g" else (c, tx) for c, tx in lines]
+    return ('<section class="sec story" id="ev-whatif"><div class="wrap"><h2>What if the depot had fewer chargers?</h2>'
+            '<p class="lead">The same model with <code>param chargers</code> changed: three chargers, then two. The files are <code>ev_depot_3.sol</code> and <code>ev_depot_2.sol</code>, identical but for that line.</p>'
+            + log_block("four chargers, relaxation (integrality dropped)", keep(l4)) + log_block("three chargers", keep(l3)) + log_block("three chargers, relaxation", keep(l3r)) + log_block("two chargers", keep(l2)) +
+            '<p>With four chargers the relaxation already has the value of the integer optimum, 23.08, so the search only has to find a whole plan at that cost (3 nodes): the charger limit costs nothing. With three the plan costs more (27.56, the relaxation says at least 26.58) and the search has to work for it: 55,331 nodes and about 3 seconds on the machine that built this page. HiGHS on the same flat model prints 27.56 in about 0.4 seconds (both times include process start, measured once on 2026-11-05, HiGHS through scipy): on this model our branch and bound, which has no cuts and no presolve, is well behind (design.md section 19.5). With two chargers no plan exists, and the answer is <code>infeasible</code>: HiGHS agrees. That last answer is the useful one for a depot manager: two chargers cannot do it, three can, and the fourth charger saves 4.48 a night (27.56 against 23.08).</p>'
+            '<p class="fine">Long solutions are cut for reading: only the first part and the tail of the line are shown, marked with an ellipsis; the files in <code>docs/examples</code> and <code>solve run</code> give the whole line.</p></div></section>')
 
 
 def build_stories():
     parts = ['<div class="wrap pagehead"><p class="eyebrow">from a first model to a refusal</p><h1>Stories</h1><p class="lead">Each story states a small problem, writes it as a <code>.sol</code> model, runs the built binary and reads the answer. The numbers and the figures come from the run, not from the prose.</p>',
              '<ul class="toc">%s<li><a href="#says-no">When the answer is no</a></li><li><a href="#trust">Trust, then check</a></li><li><a href="#stopped">When it stops early</a></li></ul></div>' % "".join('<li><a href="#%s">%s</a></li>' % (i, esc(t)) for i, _, t, _, _, _ in STORIES)]
-    figs = dict(fig_bakery=lambda: fig_bakery()[0], fig_van=fig_van, fig_rota=fig_rota, fig_depots=fig_depots)
+    figs = dict(fig_bakery=lambda: fig_bakery()[0], fig_van=fig_van, fig_rota=fig_rota, fig_depots=fig_depots, fig_ev=fig_ev)
     for sid, model, title, story, reading, fig in STORIES:
         lines, _, _, _ = cmd(sid, ["run"], model)
         parts.append('<section class="sec story" id="%s"><div class="wrap"><h2>%s</h2><p class="lead">%s</p>%s<div class="fig">%s</div>%s<p>%s</p></div></section>' % (sid, esc(title), story, code_block(read("examples/" + model)), figs[fig](), log_block("solve run < %s" % model, lines), reading))
+        if sid == "ev":
+            parts.append(ev_extras())
     # when the answer is no
     r, _, _, _ = cmd("n", ["run"], "cannot.sol")
     r2, _, _, _ = cmd("n", ["check"], "unbounded.sol")
@@ -499,7 +547,7 @@ def build_stories():
     # stopped early
     s1, _, _, _ = cmd("s", ["run", "--node-limit", "3"], "van.sol")
     parts.append('<section class="sec story" id="stopped"><div class="wrap"><h2>When it stops early</h2><p class="lead">A bigger model can take longer than you will wait. A limit makes the stop an answer.</p>%s<p>With three nodes the search has found no whole answer yet, so the status is <code>unknown</code>; but it knows the optimum cannot exceed the <code>bound</code>. With an incumbent the status would be <code>feasible</code> and a <code>gap</code> would say how far the best known answer could be from the best possible. Either way the exit status is 1: not an error, not a finished proof.</p></div></section>' % log_block("solve run --node-limit 3", s1))
-    return page("stories.html", "cancho-solve stories: a bakery, a van, a rota, two depots and a refusal", "Small problems written as models and solved by the built binary: every number and figure on the page is drawn from a real run.", "\n".join(parts))
+    return page("stories.html", "cancho-solve stories: a bakery, a van, a rota, two depots, an EV depot and a refusal", "Small problems written as models and solved by the built binary: every number and figure on the page is drawn from a real run.", "\n".join(parts))
 
 
 def build_agents():
