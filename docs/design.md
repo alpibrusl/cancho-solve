@@ -364,3 +364,53 @@ The claim of 17.1 held: the boxed families gain most (a factor of 10 to 13 in it
 Every one of the 21 instances still agrees with HiGHS's optimal value. The iteration counts are now within about ten percent of HiGHS's on the dense and knapsack families (the gap of section 15 was a factor of 8 to 200), and the cost per iteration of the weights was small enough that the time followed the iterations. **What this does not show:** it is HiGHS through scipy, on four generated families of at most 800 rows, with the model already expanded; the dense tableau still does `m * (n + m)` work per iteration and holds that many cells (32 million at most), so a model of tens of thousands of rows is out of reach however few iterations it takes; HiGHS wins there by exploiting sparsity (presolve, LU), which is the next step and is not claimed here. Transportation got slightly worse (more iterations than before 17.2, 1.4 times HiGHS), an unexplained regression of one family that is left open.
 
 **Mutants after 17.2:** the whole suite of 45 gives 44 killed and 1 survived: the known one, "verified is always true", which can only be seen when the solver is already wrong (section 15). The five of the pricing were run with gate 5 added to the runner.
+
+## 18. Against OR-Tools (measured), and the sparse revised dual simplex (designed, not built)
+
+### 18.1 Time against OR-Tools' LP solvers
+
+`scripts/bench_ortools.py`, OR-Tools 9.15.6755 (`pywraplp`, GLOP and CLP, every option at its default, presolve included), installed in a scratch virtualenv (`pip install ortools scipy numpy`); the same generated instances as section 15 (seed 7); `solve run --relax` of the build at `f04bd05` (long step and steepest edge). Ours is the process minus start-up; OR-Tools is `Solve()` alone, after the model is built; HiGHS (`highs-ds` through scipy) is repeated for reference; minimum of 3 runs; one machine (Apple Silicon, `arm64`), one thread each.
+
+| instance | rows x cols | ours (s) | GLOP (s) | CLP (s) | HiGHS (s) | ours/GLOP | ours/CLP |
+|---|---|---|---|---|---|---|---|
+| random dense 200x400 | 200 x 400 | 0.0222 | 0.0617 | 0.0171 | 0.0214 | 0.4 | 1.3 |
+| random dense 800x1600 | 800 x 1600 | 2.70 | 4.64 | 4.73 | 2.81 | 0.6 | 0.6 |
+| transportation 80x160 | 240 x 12,800 | 0.0306 | 0.0224 | 0.0197 | 0.0255 | 1.4 | 1.6 |
+| transportation 100x160 | 260 x 16,000 | 0.0439 | 0.0275 | 0.0215 | 0.0311 | 1.6 | 2.0 |
+| assignment 80x80 | 160 x 6,400 | 0.0071 | 0.0061 | 0.0022 | 0.0139 | 1.2 | 3.3 |
+| assignment 100x100 | 200 x 10,000 | 0.0129 | 0.0116 | 0.0040 | 0.0227 | 1.1 | 3.2 |
+| multi-knapsack 1000 items | 50 x 1,000 | 0.0051 | 0.0089 | 0.0061 | 0.0128 | 0.6 | 0.8 |
+| multi-knapsack 4000 items | 200 x 4,000 | 0.2365 | 0.2881 | 0.3739 | 0.2590 | 0.8 | 0.6 |
+
+(The full table of 14 instances is what `bench_ortools.py` prints; the rows above are a selection, the others lie between them.) All 14 agree with both OR-Tools solvers on the optimal value to 1e-6 relative. Reading: on the dense and the knapsack instances ours is at 0.4 to 0.8 times GLOP and 0.6 to 1.3 times CLP; on the network LPs (transportation, assignment) **ours is 1.1 to 1.6 times GLOP and 1.6 to 3.3 times CLP, slower**, and CLP is the faster of the two OR-Tools solvers there. **Not claimed:** nothing about instances larger than these (the dense tableau cannot hold them), nothing about MIP or CP (S3, S5), nothing about presolve-friendly structured models (ours has no presolve), and a Python call is inside OR-Tools' figure (its overhead is a fraction of a millisecond, which matters only for the smallest rows). The iteration count OR-Tools reports (`iterations()`) is not comparable with ours: it counts what GLOP does after its presolve.
+
+### 18.2 Why the dense tableau stops here: the basis is sparse where the problems are
+
+The tableau updates `m * (n + m)` cells each iteration whatever the model. What a sparse method would carry instead is the LU factorisation of the basis. `scripts/basis_density.py` takes the optimal basis from GLOP (its `basis_status`), factorises it with SuperLU (COLAMD ordering), and counts:
+
+| instance | m | n | nnz(B) | nnz(L+U) | m x m | tableau cells m(n+m) | (L+U)/m^2 |
+|---|---|---|---|---|---|---|---|
+| random dense 200x400 | 200 | 400 | 10,312 | 16,121 | 40,000 | 120,000 | 0.40 |
+| random dense 400x800 | 400 | 800 | 46,554 | 77,652 | 160,000 | 480,000 | 0.49 |
+| multi-knapsack 2000 items | 100 | 2,000 | 4,654 | 6,322 | 10,000 | 210,000 | 0.63 |
+| transportation 100x160 | 260 | 16,000 | 477 | 905 | 67,600 | 4,227,600 | 0.013 |
+| assignment 100x100 | 200 | 10,000 | 399 | 678 | 40,000 | 2,040,000 | 0.017 |
+
+On the network LPs the factor of the basis has under 1,000 nonzeros where the tableau rewrites four million cells an iteration: the sparse method has thousands of times less to do per iteration, and that is where the 1.6 to 3.3 times behind CLP comes from. On the dense random LPs and the knapsack the factor is 40 to 63 percent full, so a sparse method has little to gain there (and its overheads, the eta file and the pricing through the rows, would cost more than they save): **the tableau is the right method for those, and the sparse one is for the structured models.** One basis per instance, at the optimum only; the bases along the way are denser or sparser and were not measured.
+
+### 18.3 Design of the sparse revised dual simplex **[choices unless marked]**
+
+It keeps everything of 14 and 17 (the same dual feasibility by boxing, the long step, the steepest-edge pricing) and replaces the tableau by a factorised basis.
+- **Data.** The checker already holds the model by rows (`row_start`, `term_col`, `term_coef`, section 6). The solver builds the column form (a counting sort over the same terms) once; the logical columns are implicit unit vectors. Memory is `O(nnz(A) + nnz(L+U) + etas + m + n)`.
+- **One iteration** (the names are the textbook's): choose the leaving row `r` by `viol^2 / w_r`; BTRAN `rho = e_r B^-1`; price the row `alpha_r = rho A_N` through the rows of `A` for the nonzeros of `rho` only (so the work follows the sparsity of `rho`); the bound-flipping ratio test of 17.1 over the candidates of `alpha_r`; FTRAN the entering column `alpha_q = B^-1 a_q` and one more FTRAN for the weight update `tau = B^-1 rho`; update the basic values, with the flipped columns' effect as one extra FTRAN of `sum a_j * delta_j`, the reduced costs by `alpha_r`, and the weights by the usual formula (not the exact recomputation of 17.2, which needs the tableau).
+- **Factorisation.** LU with Markowitz pivot selection and a threshold test (`u = 0.1`), singletons first (network bases are nearly triangular), triangular solves skipping zeros; the basis change is a product-form eta (simplest; Forrest-Tomlin is **open**); **refactorise** every 64 iterations (**open**: choose by measuring), and at once when `alpha_q(r)` and the pivot taken from the row disagree by more than `1e-7` relative. At each refactorisation the basic values, the reduced costs and the weights' consistency are recomputed from scratch, which stops the drift of the updates.
+- **Determinism.** Fixed order everywhere, no hashing, no threads; ties as in the dense solver.
+- **Limits.** The 32-million-cell ceiling goes away; the limits of the model checker (16,384 variables, 16,384 rows, 1,048,576 nonzeros, section 6) become the binding ones. Raising them is a change of `layout.cho` through `gen_layout.py` and is **open**; the benchmark below stays within them.
+- **Both solvers stay.** The dense tableau is kept (`solve run --method dense|sparse|auto`, **open**: the rule for `auto` follows from 18.2: the tableau while the model is dense or small, the sparse method when the model is sparse). The dense solver is also the second oracle of the sparse one: the same model must give the same optimal value from both, a check that shares no code with the factorisation.
+
+**Stages, each measured before the next** (the dense solver's discipline of sections 14 to 17):
+1. **Sparse linear algebra alone** (`lib/lp/sparse.cho`): column form, LU, FTRAN and BTRAN with etas. Gate: solves against scipy's `splu` on random sparse bases, residual under `1e-9`; mutants of the pivot threshold, the permutation and the eta application.
+2. **The revised dual simplex on top.** Gates: the oracle (`check_highs.py`, same 168 instances) and the dense solver as second oracle; the iteration-count gate with bounds from the dense solver's counts; mutants.
+3. **The benchmark** on the families of 18.1 and on the larger network LPs the tableau cannot hold, within the limits above.
+
+**Claim to measure, and what would refute it.** On the network LPs the time per iteration falls by a factor of the order of `m(n+m) / (nnz(L+U) + pricing)`, hundreds to thousands, and the total time reaches CLP's; a result more than 2 times behind CLP on transportation or assignment instances of the sizes of 18.1 means the design is not enough and this section is corrected. On the dense LPs the sparse solver is expected to be *slower* than the tableau; if it is not, `auto` is simpler than planned.
