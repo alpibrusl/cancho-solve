@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark of `solve run` on integer models against HiGHS (scipy.optimize.milp), OR-Tools SCIP (pywraplp) and CP-SAT (docs/design.md section 19.3, results in 19.5).
-Usage: SOLVE=build/solve python bench_mip.py [--runs N] [--limit SECONDS] [--families a,b] [--ablate]
-  default: each instance by every solver. --ablate: only ours, under the option sets of section 19.5 (nodes and iterations)."""
+Usage: SOLVE=build/solve python bench_mip.py [--runs N] [--limit SECONDS] [--families a,b] [--ablate] [--method dense|sparse|auto] [--engines] [--huge] [--extra]
+  default: each instance by every solver. --ablate: only ours, under the option sets of section 19.5 (nodes and iterations).
+  --method M: ours runs with --method M (default auto). --engines: ours with --method dense and --method sparse side by side, against HiGHS and SCIP (section 19.6).
+  --huge: instances above the dense tableau's ceiling (m (n + m) > 32,000,000 cells), where only the sparse engine can run (section 19.6)."""
 import json, os, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
 import lpgen
@@ -13,6 +15,8 @@ RUNS = int(args[args.index("--runs") + 1]) if "--runs" in args else 3
 LIMIT = float(args[args.index("--limit") + 1]) if "--limit" in args else 60.0
 FAM = args[args.index("--families") + 1].split(",") if "--families" in args else None
 ABLATE = "--ablate" in args
+METHOD = args[args.index("--method") + 1] if "--method" in args else None
+ENGINES = "--engines" in args
 
 INSTANCES = [
     ("knapsack", "30 items", lambda: lpgen.knapsack(7, 30)),
@@ -48,6 +52,13 @@ INSTANCES = [
     ("bin packing", "20 items, 10 bins", lambda: lpgen.bin_packing_lite(7, 20, 10)),
 ]
 
+if "--huge" in args:
+    INSTANCES = [
+        ("set cover", "2000 rows, 3000 sets", lambda: lpgen.set_cover(7, 2000, 3000, 0.003)),
+        ("set cover", "3000 rows, 6000 sets", lambda: lpgen.set_cover(7, 3000, 6000, 0.002)),
+        ("set cover", "5000 rows, 8000 sets", lambda: lpgen.set_cover(7, 5000, 8000, 0.001)),
+    ]
+
 if "--extra" in args:
     INSTANCES = [
         ("mkp", "100 x 30", lambda: lpgen.mkp(7, 100, 30)),
@@ -66,7 +77,7 @@ def ours(text, extra=(), timeout=LIMIT):
     for _ in range(RUNS):
         t = time.perf_counter()
         try:
-            p = subprocess.run([SOLVE, "run", *extra], input=text, capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run([SOLVE, "run", *(["--method", METHOD] if METHOD else []), *extra], input=text, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, timeout
         dt = time.perf_counter() - t
@@ -137,6 +148,39 @@ if ABLATE:
                 st = r["stats"]
                 cells.append(f"{r['status'][:3]} {st.get('nodes', '-')}n {st['iterations']}it {dt:.2f}s")
         print(f"| {fam} | {size} | " + " | ".join(cells) + " |", flush=True)
+    sys.exit(0)
+
+if ENGINES:
+    print("| family | size | rows x cols | dense | nodes | iters | sparse | nodes | iters | HiGHS | nodes | SCIP | nodes | objective agrees |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for fam, size, mk in INSTANCES:
+        if FAM and fam not in FAM:
+            continue
+        text = mk()
+        model = json.loads(subprocess.run([SOLVE, "expand"], input=text, capture_output=True, text=True).stdout)
+        cells = []
+        objs = []
+        for meth in ("dense", "sparse"):
+            METHOD = meth
+            r, dt = ours(text)
+            if r is None:
+                cells += [f">{LIMIT:.0f}s (timeout)", "-", "-"]
+            elif r["status"] == "refused" or "stats" not in r:
+                cells += ["refused (too large)", "-", "-"]
+            else:
+                if r["status"] == "optimal":
+                    objs.append(r["objective"])
+                cells += [f"{dt:.3f}s" + ("" if r["status"] == "optimal" else f" ({r['status']})"), r["stats"].get("nodes", "-"), r["stats"]["iterations"]]
+        h = highs_mip(model, time_limit=LIMIT)
+        s = scip(model)
+        if h[0] == 0:
+            objs.append(h[1])
+        if s[1] is not None and s[0] == "optimal":
+            objs.append(s[1])
+        agree = all(abs(v - objs[0]) <= 1e-6 * (1 + abs(objs[0])) for v in objs) if objs else None
+        hs = f"{h[2]:.3f}s" + ("" if h[0] == 0 else f" (status {h[0]})")
+        ss = f"{s[2]:.3f}s" + ("" if s[0] == "optimal" else " (limit)")
+        print(f"| {fam} | {size} | {len(model['constraints'])} x {len(model['variables'])} | " + " | ".join(str(c) for c in cells) + f" | {hs} | {h[3]} | {ss} | {s[3]} | {agree} |", flush=True)
     sys.exit(0)
 
 print("| family | size | rows x cols | ours | nodes | iters | HiGHS | nodes | SCIP | nodes | CP-SAT | branches | objective agrees |")

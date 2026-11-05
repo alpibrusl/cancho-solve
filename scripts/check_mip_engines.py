@@ -49,6 +49,8 @@ for s in range(3):
     cases.append((f"large set cover {s}", lpgen.set_cover(100 + s, 100 + 40 * s, 150 + 60 * s, 0.05)))
     cases.append((f"large general int {s}", lpgen.random_mip(100 + s, 14 + 2 * s, 14 + 2 * s, 0.5, 1.0)))
     cases.append((f"large mixed {s}", lpgen.random_mip(700 + s, 25 + 5 * s, 35 + 5 * s, 0.3, 0.5)))
+# sparse enough for `auto` (at most 4% full) to choose the sparse engine; the mutant "auto never chooses sparse" needs one
+cases.append(("large set cover sparse", lpgen.set_cover(7, 200, 400, 0.02)))
 if QUICK:
     cases = cases[::4]
 
@@ -150,10 +152,16 @@ for name, text in cases[::9]:
 p = subprocess.run([SOLVE, "run", "--method", "simplex"], input=cases[0][1], capture_output=True, text=True)
 if p.returncode != 2:
     fail("a bad --method is not refused")
-name, text = cases[40]
-q = run("auto", text)
-if json.loads(q.stdout)["stats"].get("method") not in ("dense", "sparse"):
-    fail("auto reports no method")
-
-print(f"mip engines gate: {'FAILED' if bad else 'passed'} ({len(cases)} instances, {n_cmp} compared, {n_opt} optimal, {n_inf} infeasible, {n_lim} limited runs, {bad} failures)")
+n_auto = 0
+for name, text in cases:
+    if name.startswith("large") or name.startswith("set cover"):
+        model = json.loads(subprocess.run([SOLVE, "expand"], input=text, capture_output=True, text=True).stdout)
+        nnz = sum(len(r["terms"]) for r in model["constraints"])
+        m, n = len(model["constraints"]), len(model["variables"])
+        want = "sparse" if 25 * nnz <= m * n else "dense"  # main.cho auto_method (the tableau fits for every model here)
+        got = json.loads(run("auto", text).stdout)["stats"].get("method")
+        n_auto += 1
+        if got is not None and got != want:
+            fail(f"{name}: auto chose {got}, density {nnz / (m * n):.3f} says {want}")
+print(f"mip engines gate: {'FAILED' if bad else 'passed'} ({len(cases)} instances, {n_cmp} compared, {n_opt} optimal, {n_inf} infeasible, {n_lim} limited runs, {n_auto} auto choices, {bad} failures)")
 sys.exit(1 if bad else 0)
