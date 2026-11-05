@@ -33,7 +33,7 @@ REFACTORS = {"random dense LP 200x400": 3, "random dense LP 100x200": 2, "multi-
 bad = 0
 def check_refactors(name, result):
     global bad
-    if METHOD == "sparse" and name in REFACTORS:
+    if METHOD in ("sparse", "sparse-raw") and name in REFACTORS:
         got = result["stats"].get("refactorisations")
         if got != REFACTORS[name]:
             bad += 1
@@ -48,7 +48,7 @@ for name, text, want in EXACT:
         print(f"ok   {name}: {it} iterations (exact)")
     check_refactors(name, json.loads(p.stdout))
 for name, text, bound_dense, bound_sparse in CASES:
-    bound = bound_sparse if METHOD == "sparse" else bound_dense
+    bound = bound_sparse if METHOD in ("sparse", "sparse-raw") else bound_dense
     p, _ = run_solve(SOLVE, ["run", "--relax"], text)
     r = json.loads(p.stdout)
     it = r["stats"]["iterations"]

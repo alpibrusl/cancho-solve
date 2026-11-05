@@ -8,7 +8,7 @@ of the EV model (a charger row that cannot bind, then the `on` columns it blocke
 (1e-6) and `verified` must hold; and the presolve must have removed something on at least 90% of the optimal ones (a presolve that does nothing passes (1) only if it is wrong).
 (3) The ample EV-depot models of docs/design.md 21.1 (48 x 24, 96 x 32, 144 x 40) with the same agreement, and at least 95% of the rows removed.
 Usage: SOLVE=build/solve python3 scripts/check_presolve.py   (needs scipy)"""
-import json, os, random, sys
+import json, os, random, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hs import run_solve, highs, violation, objective_of
 from evgen import generate
@@ -24,7 +24,8 @@ def fail(msg):
 
 
 def solve(text, method):
-    p, _ = run_solve(SOLVE, ["run", "--relax", "--method", method], text)
+    # not through hs.run_solve: it appends --method $SOLVE_METHOD, and this gate compares two methods
+    p = subprocess.run([SOLVE, "run", "--relax", "--method", method], input=text, capture_output=True, text=True)
     if p.returncode not in (0, 1):
         return None, p.stderr.strip()[:200]
     return json.loads(p.stdout), None

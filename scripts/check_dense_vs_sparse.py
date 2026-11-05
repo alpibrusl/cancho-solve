@@ -52,34 +52,34 @@ for spread in (2, 3):
     cases.append((f"scaled long {spread}", scaled_lp(40 + spread, 300, 600, spread)))
 bad = 0
 refac = 0
-for name, text in cases:
-    d, s = run("dense", text), run("sparse", text)
+for name, text, sm in [(n_, t_, m_) for n_, t_ in cases for m_ in ("sparse", "sparse-raw")]:
+    d, s = run("dense", text), run(sm, text)
     if d.returncode not in (0, 1) or s.returncode not in (0, 1):
-        print(f"FAIL {name}: dense status {d.returncode} {d.stderr[:100]}, sparse status {s.returncode} {s.stderr[:100]}")
+        print(f"FAIL {name} [{sm}]: dense status {d.returncode} {d.stderr[:100]}, sparse status {s.returncode} {s.stderr[:100]}")
         bad += 1
         continue
     a, b = json.loads(d.stdout), json.loads(s.stdout)
     if a["status"] != b["status"]:
-        print(f"FAIL {name}: dense {a['status']}, sparse {b['status']}")
+        print(f"FAIL {name} [{sm}]: dense {a['status']}, sparse {b['status']}")
         bad += 1
         continue
     if a["status"] != "optimal":
         continue
     if abs(a["objective"] - b["objective"]) > 1e-6 * (1 + abs(a["objective"])):
-        print(f"FAIL {name}: objective {a['objective']} (dense) against {b['objective']} (sparse)")
+        print(f"FAIL {name} [{sm}]: objective {a['objective']} (dense) against {b['objective']} (sparse)")
         bad += 1
         continue
     e = subprocess.run([SOLVE, "expand"], input=text, capture_output=True, text=True)
     v = violation(json.loads(e.stdout), b["x"])
     if v > 1e-6 or not b["verified"]:
-        print(f"FAIL {name}: the sparse solution violates the model by {v}, verified={b['verified']}")
+        print(f"FAIL {name} [{sm}]: the sparse solution violates the model by {v}, verified={b['verified']}")
         bad += 1
-    if b["stats"]["iterations"] > 256:
+    if b["stats"]["iterations"] > 256 and sm == "sparse-raw":
         refac += 1
 
 # the iteration limit: both stop with `unknown` and the sparse solver counts the iterations it made
 text = lpgen.random_lp(7, 100, 200, 0.5)
-for method in ("dense", "sparse"):
+for method in ("dense", "sparse", "sparse-raw"):
     p = run(method, text, ("--iteration-limit", "5"))
     r = json.loads(p.stdout)
     if p.returncode != 1 or r["status"] != "unknown" or r["stats"]["iterations"] != 5:

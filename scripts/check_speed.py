@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gate (docs/design.md section 21.2, written before the hypersparse code): the time of one iteration of the sparse dual simplex must not grow with the number of rows.
-Model: the ample EV-depot LP (scripts/evgen.py, seed 7) at 48 x 24 (2,400 rows) and 144 x 40 (11,744 rows), `solve run --relax --method sparse`. Time = the process minus the
+Model: the ample EV-depot LP (scripts/evgen.py, seed 7) at 48 x 24 (2,400 rows) and 144 x 40 (11,744 rows), `solve run --relax --method sparse-raw` (the sparse solver without its presolve, design.md 21.3: the gate judges the iteration). Time = the process minus the
 minimum of `solve check` on the same text, minimum of RUNS; per iteration = divided by the iterations of the answer. Requires time/iteration (large) <= BOUND * time/iteration (small);
 BOUND = 3.0 against a ratio of 4.9 in rows (measured 4.06 to 4.28 before the fix, 2.2 after). Both answers must be optimal and agree with HiGHS (scipy) to 1e-6 relative.
 Usage: SOLVE=build/solve python3 scripts/check_speed.py [--runs N] [--bound X]   (needs scipy for the oracle)"""
@@ -50,7 +50,7 @@ def measure(V, T):
     floor = min(run(["check"], text)[1] for _ in range(args.runs))
     best, out = None, None
     for _ in range(args.runs):
-        p, dt = run(["run", "--relax", "--method", "sparse"], text)
+        p, dt = run(["run", "--relax", "--method", "sparse-raw"], text)
         out = json.loads(p.stdout)
         if out.get("status") != "optimal":
             print(f"FAIL {V}x{T}: status {out.get('status')}")

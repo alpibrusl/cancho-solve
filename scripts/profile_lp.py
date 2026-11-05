@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where the time of the sparse LP solver goes (docs/design.md section 22): iterations of ours against HiGHS (dual simplex, scipy) and GLOP / CLP (OR-Tools, default presolve),
 and the time per iteration divided by the rows. Instances: the ample EV-depot LP at three sizes, a transportation LP and a min-cost flow LP.
-Usage: SOLVE=build/solve python scripts/profile_lp.py [--runs N]"""
+Usage: SOLVE=build/solve [METHOD=sparse-raw] python scripts/profile_lp.py [--runs N] [only]"""
 import argparse, json, os, subprocess, sys, time
 import numpy as np
 from scipy.optimize import linprog
@@ -17,6 +17,7 @@ ap.add_argument("only", nargs="?", default=None)
 args = ap.parse_args()
 only = args.only
 SOLVE = os.environ.get("SOLVE", "build/solve")
+METHOD = os.environ.get("METHOD", "sparse")   # sparse (with the presolve of design.md 21.3) or sparse-raw
 
 
 def run(argv, text):
@@ -29,7 +30,7 @@ def ours(text):
     floor = min(run(["check"], text)[1] for _ in range(args.runs))
     best, st = None, None
     for _ in range(args.runs):
-        p, dt = run(["run", "--relax", "--method", "sparse"], text)
+        p, dt = run(["run", "--relax", "--method", METHOD], text)
         o = json.loads(p.stdout)
         best = dt if best is None else min(best, dt)
         st = o["stats"]

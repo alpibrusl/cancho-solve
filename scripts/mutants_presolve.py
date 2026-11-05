@@ -32,6 +32,10 @@ MUTANTS = [
     ("while ri[29] == 1 && sweeps < 20 {", "while ri[29] == 1 && sweeps < 1 {", "one sweep only"),
     ("ri[24] = ri[24] + 1;\n                ri[29] = 1;\n            } else if cnt == 1", "ri[24] = ri[24] + 1;\n            } else if cnt == 1", "an empty row does not count as a change"),
     ("ri[25] = ri[25] + 1;\n    return 0;", "return 0;", "the removed columns are not counted"),
+    ("sign = -1.0;", "sign = 1.0;", "a maximisation is minimised"),
+    ("rf[o_rhi + i] = rhs;\n        } else if s == 1 {", "rf[o_rhi + i] = rhs + 1.0;\n        } else if s == 1 {", "a <= row has the wrong right side"),
+    ("rf[o_rlo + i] = rhs;\n            rf[o_rhi + i] = 1e300;", "rf[o_rlo + i] = rhs + 1.0;\n            rf[o_rhi + i] = 1e300;", "a >= row has the wrong right side"),
+    ("rf[o_cost + ints[l.obj_col(t)]] = sign * fl[l.obj_coef(t)];", "rf[o_cost + ints[l.obj_col(t)]] = fl[l.obj_coef(t)];", "the sense of a maximisation is not applied to the costs"),
 ]
 
 killed = survived = invalid = 0
@@ -56,7 +60,7 @@ for n, (old, new, what) in enumerate(MUTANTS):
             print(f"INVALID mutant {n} ({what}): does not build: {(b.stderr or b.stdout).strip()[:200]}")
             invalid += 1
             continue
-        env = dict(os.environ, SOLVE=os.path.join(tmp, "build/solve"), SOLVE_METHOD="sparse")
+        env = dict(os.environ, SOLVE=os.path.join(tmp, "build/solve"), SOLVE_METHOD="sparse")   # check_presolve.py does not use SOLVE_METHOD for its own runs
         dead = False
         for gate in ("check_presolve.py", "check_highs.py", "check_dense_vs_sparse.py"):
             try:
