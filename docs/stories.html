@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<!-- Written by scripts/site.py from real runs of the built `solve`. Do not edit by hand; run python3 scripts/site.py. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-solve stories: a bakery, a van, a rota, two depots and a refusal</title>
+<meta name="description" content="Small problems written as models and solved by the built binary: every number and figure on the page is drawn from a real run.">
+<link rel="canonical" href="https://alpibrusl.github.io/cancho-solve/stories.html">
+<meta name="robots" content="index, follow">
+<meta property="og:site_name" content="cancho-solve"><meta property="og:type" content="website"><meta property="og:title" content="cancho-solve stories: a bakery, a van, a rota, two depots and a refusal"><meta property="og:description" content="Small problems written as models and solved by the built binary: every number and figure on the page is drawn from a real run.">
+<meta name="color-scheme" content="light dark">
+<link rel="alternate" type="text/markdown" href="agents.md" title="cancho-solve, as an agent reads it">
+<link rel="stylesheet" href="assets/site.css"><link rel="stylesheet" href="assets/home.css"><link rel="stylesheet" href="assets/solve.css">
+</head>
+<body class="">
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="wrap">
+  <a class="brand" href="./">cancho-solve</a>
+  <nav aria-label="Site"><a href="index.html">Home</a><a href="examples.html">Examples</a><a href="stories.html" aria-current="page">Stories</a><a href="https://github.com/alpibrusl/cancho-solve">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="wrap pagehead"><p class="eyebrow">from a first model to a refusal</p><h1>Stories</h1><p class="lead">Each story states a small problem, writes it as a <code>.sol</code> model, runs the built binary and reads the answer. The numbers and the figures come from the run, not from the prose.</p>
+<ul class="toc"><li><a href="#bakery">A bakery decides what to bake</a></li><li><a href="#van">A van with room for 15 kilos</a></li><li><a href="#rota">A night rota nobody dreads</a></li><li><a href="#depots">Two depots, three shops</a></li><li><a href="#says-no">When the answer is no</a></li><li><a href="#trust">Trust, then check</a></li><li><a href="#stopped">When it stops early</a></li></ul></div>
+<section class="sec story" id="bakery"><div class="wrap"><h2>A bakery decides what to bake</h2><p class="lead">Marta runs a small bakery. Today she has 40 kg of flour, 8 kg of butter and 10 oven hours. A batch of loaves takes 2 kg of flour, half a kilo of butter and an hour of oven, and sells for 12; a tray of croissants takes a kilo of flour, a kilo and a half of butter and half an oven hour, and sells for 18. A fraction of a batch is fine.</p><pre class="code" tabindex="0"><code>// A bakery has 40 kg of flour, 8 kg of butter and 10 oven hours today.
+// Per batch: a loaf needs 2 kg flour, 0.5 kg butter, 1 oven hour and sells for 12;
+// a tray of croissants needs 1 kg flour, 1.5 kg butter, 0.5 oven hour and sells for 18.
+// A batch can be fractional (half a tray is fine), so this is a linear program.
+var loaf   : real 0..20;
+var tray   : real 0..20;
+
+maximize sales: 12*loaf + 18*tray;
+
+subject to
+    flour:  2*loaf + 1*tray   &lt;= 40;
+    butter: 0.5*loaf + 1.5*tray &lt;= 8;
+    oven:   1*loaf + 0.5*tray &lt;= 10;</code></pre><div class="fig"><svg viewBox="0 0 520 172" role="img" aria-labelledby="fb-t"><title id="fb-t">Each resource used against what the bakery has; butter and oven are used up</title><text class="lb" x="0" y="39">flour</text><rect class="ft" x="80" y="24" width="300" height="20" rx="5"/><rect class="fb" x="80" y="24" width="150.0" height="20" rx="5"/><text class="tk" x="390" y="39">20 of 40</text><text class="lb" x="0" y="83">butter</text><rect class="ft" x="80" y="68" width="300" height="20" rx="5"/><rect class="fbf" x="80" y="68" width="300.0" height="20" rx="5"/><text class="tk" x="390" y="83">8 of 8 · used up</text><text class="lb" x="0" y="127">oven</text><rect class="ft" x="80" y="112" width="300" height="20" rx="5"/><rect class="fbf" x="80" y="112" width="300.0" height="20" rx="5"/><text class="tk" x="390" y="127">10 of 10 · used up</text></svg></div><div class="plabel">solve run &lt; bakery.sol</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; bakery.sol</span>
+<span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2}}</span></pre></div><p>She writes it down as a model, and asks. The answer is not the obvious one: neither all loaves nor all croissants, but 8.8 batches and 2.4 trays. The figure shows why: butter and oven time are used up, flour is not. More flour would not help; a little more butter would. <em>That</em> is the thing a solver tells you that a spreadsheet guess does not.</p></div></section>
+<section class="sec story" id="van"><div class="wrap"><h2>A van with room for 15 kilos</h2><p class="lead">Tomás drives a courier van that carries 15 kg. He has six parcels. Each is taken whole or left at the depot; the weights are 12, 2, 1, 4, 7 and 5 kg, and each pays a fee.</p><pre class="code" tabindex="0"><code>// A courier van carries at most 15 kg. Six parcels, each taken whole or left behind:
+// weight in kg, and the fee the courier earns for delivering it.
+param n   = 6;
+param w   = [12, 2, 1, 4, 7, 5];
+param fee = [4, 2, 1, 10, 8, 6];
+param cap = 15;
+
+var take[0..n] : bool;
+
+maximize income: sum i in 0..n: fee[i] * take[i];
+
+subject to
+    weight: sum i in 0..n: w[i] * take[i] &lt;= cap;</code></pre><div class="fig"><svg viewBox="0 0 520 190" role="img" aria-labelledby="fv-t"><title id="fv-t">The parcels in the van and the parcels left behind, drawn to weight</title><text class="lb" x="0" y="16">in the van (15 kg)</text><rect class="ft" x="0" y="24" width="330" height="46" rx="6"/><rect class="fb" x="3.0" y="27" width="41.0" height="40" rx="4"/><text class="in" x="7.0" y="45">2</text><text class="in" x="7.0" y="60">2</text><rect class="fb" x="47.0" y="27" width="19.0" height="40" rx="4"/><text class="in" x="51.0" y="45">1</text><text class="in" x="51.0" y="60">1</text><rect class="fb" x="69.0" y="27" width="85.0" height="40" rx="4"/><text class="in" x="73.0" y="45">4 kg</text><text class="in" x="73.0" y="60">10</text><rect class="fb" x="157.0" y="27" width="151.0" height="40" rx="4"/><text class="in" x="161.0" y="45">7 kg</text><text class="in" x="161.0" y="60">8</text><text class="lb" x="0" y="106">left behind</text><rect class="fo" x="0.0" y="114" width="261.0" height="40" rx="4"/><text class="tk" x="4.0" y="131">12 kg</text><text class="tk" x="4.0" y="146">4</text><rect class="fo" x="268.0" y="114" width="107.0" height="40" rx="4"/><text class="tk" x="272.0" y="131">5 kg</text><text class="tk" x="272.0" y="146">6</text><text class="tk" x="0" y="180">top: weight in kg; bottom: the fee. In the van: 14 kg, fee 21.</text></svg></div><div class="plabel">solve run &lt; van.sol</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; van.sol</span>
+<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":6,"rows":1,"columns":6,"nodes":7,"branched":4,"method":"dense"}}</span></pre></div><p>Now the variables are yes-or-no, so <code>solve</code> branches: it solves the LP with fractions, finds a fractional parcel, and splits on it until the answer is whole. The heavy 12 kg parcel does not make the cut, for its fee; four parcels do, filling 14 of the 15 kg. <code>stats.nodes</code> says how many LPs it took.</p></div></section>
+<section class="sec story" id="rota"><div class="wrap"><h2>A night rota nobody dreads</h2><p class="lead">The ward needs one nurse on each of four night shifts and each nurse works one. Every nurse has scored every shift from 0 (happy) to 9 (would rather not). The head nurse wants the lowest total.</p><pre class="code" tabindex="0"><code>// Four nurses, four night shifts, one nurse per shift and one shift per nurse.
+// dislike[i*n+j] is how much nurse i dislikes shift j (0 = happy, 9 = would rather not).
+param n = 4;
+param dislike = [3, 7, 2, 9,
+                 6, 1, 8, 4,
+                 5, 5, 3, 2,
+                 9, 4, 6, 1];
+
+var give[0..n, 0..n] : bool;
+
+minimize unhappiness: sum i in 0..n: sum j in 0..n: dislike[i*n+j] * give[i,j];
+
+subject to
+    forall i in 0..n: one_shift_each: sum j in 0..n: give[i,j] == 1;
+    forall j in 0..n: one_nurse_each: sum i in 0..n: give[i,j] == 1;</code></pre><div class="fig"><svg viewBox="0 0 434 264" role="img" aria-labelledby="fr-t"><title id="fr-t">Who works which shift: the chosen cells are filled</title><text class="tk" x="88" y="14" text-anchor="middle">shift 0</text><text class="tk" x="144" y="14" text-anchor="middle">shift 1</text><text class="tk" x="200" y="14" text-anchor="middle">shift 2</text><text class="tk" x="256" y="14" text-anchor="middle">shift 3</text><text class="tk" x="0" y="60">nurse 0</text><rect class="fb" x="62" y="26" width="50" height="50" rx="6"/><text class="in" x="87" y="56" text-anchor="middle">3</text><rect class="ft" x="118" y="26" width="50" height="50" rx="6"/><text class="tk" x="143" y="56" text-anchor="middle">7</text><rect class="ft" x="174" y="26" width="50" height="50" rx="6"/><text class="tk" x="199" y="56" text-anchor="middle">2</text><rect class="ft" x="230" y="26" width="50" height="50" rx="6"/><text class="tk" x="255" y="56" text-anchor="middle">9</text><text class="tk" x="0" y="116">nurse 1</text><rect class="ft" x="62" y="82" width="50" height="50" rx="6"/><text class="tk" x="87" y="112" text-anchor="middle">6</text><rect class="fb" x="118" y="82" width="50" height="50" rx="6"/><text class="in" x="143" y="112" text-anchor="middle">1</text><rect class="ft" x="174" y="82" width="50" height="50" rx="6"/><text class="tk" x="199" y="112" text-anchor="middle">8</text><rect class="ft" x="230" y="82" width="50" height="50" rx="6"/><text class="tk" x="255" y="112" text-anchor="middle">4</text><text class="tk" x="0" y="172">nurse 2</text><rect class="ft" x="62" y="138" width="50" height="50" rx="6"/><text class="tk" x="87" y="168" text-anchor="middle">5</text><rect class="ft" x="118" y="138" width="50" height="50" rx="6"/><text class="tk" x="143" y="168" text-anchor="middle">5</text><rect class="fb" x="174" y="138" width="50" height="50" rx="6"/><text class="in" x="199" y="168" text-anchor="middle">3</text><rect class="ft" x="230" y="138" width="50" height="50" rx="6"/><text class="tk" x="255" y="168" text-anchor="middle">2</text><text class="tk" x="0" y="228">nurse 3</text><rect class="ft" x="62" y="194" width="50" height="50" rx="6"/><text class="tk" x="87" y="224" text-anchor="middle">9</text><rect class="ft" x="118" y="194" width="50" height="50" rx="6"/><text class="tk" x="143" y="224" text-anchor="middle">4</text><rect class="ft" x="174" y="194" width="50" height="50" rx="6"/><text class="tk" x="199" y="224" text-anchor="middle">6</text><rect class="fb" x="230" y="194" width="50" height="50" rx="6"/><text class="in" x="255" y="224" text-anchor="middle">1</text><text class="tk" x="298" y="60">filled: the choice;</text><text class="tk" x="298" y="80">numbers: dislike, total 8</text></svg></div><div class="plabel">solve run &lt; rota.sol</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; rota.sol</span>
+<span class="g">{"status":"optimal","objective":8.0,"bound":8.0,"x":{"give[0,0]":1.0,"give[0,"give[0,"give[0,"give[1,"give[1,1]":1.0,"give[1,"give[1,"give[2,"give[2,"give[2,2]":1.0,"give[2,"give[3,"give[3,"give[3,"give[3,3]":1.0,…},"verified":true,"max_violation":0.0,"stats":{"iterations":6,"rows":8,"columns":16,"nodes":1,"branched":0,"method":"dense"}}</span></pre></div><p>This is an assignment problem, a model of rows that must equal one. The answer is the diagonal here, total 8; the search needed a single node because the LP relaxation was already whole. Assignment models are special: the LP relaxation of one always has a whole optimal vertex, so there was nothing to branch on.</p></div></section>
+<section class="sec story" id="depots"><div class="wrap"><h2>Two depots, three shops</h2><p class="lead">A wholesaler has two depots, holding 60 and 50 crates, and three shops that need 30, 40 and 25. Crates can be split between shops. A crate costs a different amount on each route.</p><pre class="code" tabindex="0"><code>// Two depots supply three shops. cost[i*3+j] is the price per crate from depot i to shop j.
+// Depot 0 holds 60 crates, depot 1 holds 50. The shops need 30, 40 and 25. Crates can be split.
+param cost = [4, 6, 9,
+              5, 3, 7];
+param stock = [60, 50];
+param need  = [30, 40, 25];
+
+var ship[0..2, 0..3] : real 0..100;
+
+minimize freight: sum i in 0..2: sum j in 0..3: cost[i*3+j] * ship[i,j];
+
+subject to
+    forall i in 0..2: stock_limit: sum j in 0..3: ship[i,j] &lt;= stock[i];
+    forall j in 0..3: shop_need:   sum i in 0..2: ship[i,j] &gt;= need[j];</code></pre><div class="fig"><svg viewBox="0 0 520 190" role="img" aria-labelledby="fd-t"><title id="fd-t">Crates shipped from each depot to each shop, as bars; the second depot ships to two shops</title><text class="lb" x="0" y="24">depot 0</text><rect class="fb" x="80.0" y="8" width="147.0" height="26" rx="4"/><text class="in" x="84.0" y="25">shop 0: 30</text><rect class="fb" x="230.0" y="8" width="72.0" height="26" rx="4"/><text class="in" x="234.0" y="25">shop 2: 15</text><text class="tk" x="390" y="25">holds 60</text><text class="tk" x="80" y="54">price per crate: shop 0 4, shop 1 6, shop 2 9</text><text class="lb" x="0" y="112">depot 1</text><rect class="fbf" x="80.0" y="96" width="197.0" height="26" rx="4"/><text class="in" x="84.0" y="113">shop 1: 40</text><rect class="fb" x="280.0" y="96" width="47.0" height="26" rx="4"/><text class="in" x="284.0" y="113">shop 2: 10</text><text class="tk" x="390" y="113">holds 50</text><text class="tk" x="80" y="142">price per crate: shop 0 5, shop 1 3, shop 2 7</text></svg></div><div class="plabel">solve run &lt; depots.sol</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; depots.sol</span>
+<span class="g">{"status":"optimal","objective":445.0,"x":{"ship[0,0]":30.0,"ship[0,"ship[0,2]":15.0,"ship[1,"ship[1,1]":40.0,"ship[1,2]":10.0,…},"verified":true,"max_violation":0.0,"stats":{"iterations":4,"rows":5,"columns":6}}</span></pre></div><p>A transportation LP, with real variables: nothing to branch on. The cheapest plan sends depot 0 to shop 0 and shop 2, and depot 1 to shop 1 and shop 2. The figure draws the flows to scale.</p></div></section>
+<section class="sec story" id="says-no"><div class="wrap"><h2>When the answer is no</h2><p class="lead">Two kinds of no, and the tool keeps them apart. A model that cannot be read is <em>refused</em> with a repair; a model that reads fine but has no solution is an <em>answer</em>.</p><pre class="code" tabindex="0"><code>// A variable with no bounds: the checker refuses it before any solver sees it.
+var x : real;
+maximize x;
+subject to c: x &lt;= 4;</code></pre><div class="plabel">solve check</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve check &lt; unbounded.sol</span>
+<span class="b">{"error":"solve.unbounded-domain","message":"a variable has no bounds","repair":"write the bounds: var x : real 0..10;","at":{"line":2,"col":5}}</span>
+<span class="b"># exit status 2</span></pre></div><pre class="code" tabindex="0"><code>// Two parcels that cannot both be taken and must both be taken.
+var a : bool;
+var b : bool;
+maximize a + b;
+subject to
+    both:   a + b &gt;= 2;
+    either: a + b &lt;= 1;</code></pre><div class="plabel">solve run</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; cannot.sol</span>
+<span class="g">{"status":"infeasible","stats":{"iterations":1,"rows":2,"columns":2,"nodes":1,"branched":0,"method":"dense"}}</span></pre></div><p>The first is a mistake in the model: a variable with no bounds is refused before any solver sees it, with the line to write. The second is not a mistake of the tool or the writer: two parcels that must both go and cannot both go. <code>run</code> says <code>infeasible</code> and exits 0, because that is a correct result.</p></div></section>
+<section class="sec story" id="trust"><div class="wrap"><h2>Trust, then check</h2><p class="lead">An answer can come from <code>solve run</code>, from HiGHS, from a colleague or from a model that guessed. <code>solve verify</code> does not care which.</p><div class="plabel">solve verify</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ (cat van.sol; echo ---; solve run &lt; van.sol) | solve verify</span>
+<span class="g">{"status":"verified","objective":21.0,"objective_checked":true,"tolerance":0.000001,"max_bound_violation":0.0,"max_integrality_violation":0.0,"max_row_violation":0.0,"variables":6,"rows":1,"proves":"feasibility and the objective value, not optimality"}</span>
+<span class="d"># someone hand-edits the answer to take the 12 kg parcel as well</span>
+<span class="a">$ (cat van.sol; echo ---; &lt;take[0] changed to 1&gt;) | solve verify</span>
+<span class="b">{"error":"solve.row-violated","message":"a constraint does not hold at the claimed values","repair":"the solution is infeasible; solve again","count":2,"violations":[{"rule":"solve.row-violated","what":"weight","value":11.0,"limit":0.000027},{"rule":"solve.objective-mismatch","what":"objective","value":4.0,"limit":0.000026}]}</span>
+<span class="b"># exit status 2</span></pre></div><p>It reads the model and the claimed solution and re-evaluates both: bounds, whole numbers where the model says whole, every row, and the objective. Here the overloaded van is caught by the row <code>weight</code>, and the objective that no longer matches is caught with it. What it does <em>not</em> say is that an accepted answer is the best one: for that the gates hold the solver to HiGHS and, on integer models, to CP-SAT and SCIP.</p></div></section>
+<section class="sec story" id="stopped"><div class="wrap"><h2>When it stops early</h2><p class="lead">A bigger model can take longer than you will wait. A limit makes the stop an answer.</p><div class="plabel">solve run --node-limit 3</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run --node-limit 3 &lt; van.sol</span>
+<span class="g">{"status":"unknown","limit":"nodes","bound":22.857142857142858,"stats":{"iterations":3,"rows":1,"columns":6,"nodes":3,"branched":3,"method":"dense"}}</span>
+<span class="b"># exit status 1</span></pre></div><p>With three nodes the search has found no whole answer yet, so the status is <code>unknown</code>; but it knows the optimum cannot exceed the <code>bound</code>. With an incumbent the status would be <code>feasible</code> and a <code>gap</code> would say how far the best known answer could be from the best possible. Either way the exit status is 1: not an error, not a finished proof.</p></div></section>
+</main>
+<footer><div class="wrap">
+  <span class="brandline">cancho-solve</span><span>EUPL-1.2</span><span>written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
+  <a href="https://github.com/alpibrusl/cancho-solve">Repository</a><a href="https://github.com/alpibrusl/cancho-solve/blob/main/docs/design.md">Design</a><a href="agents.md">For agents</a>
+</div></footer>
+</body>
+</html>

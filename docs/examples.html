@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<!-- Written by scripts/site.py from real runs of the built `solve`. Do not edit by hand; run python3 scripts/site.py. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-solve examples: every command with its real output</title>
+<meta name="description" content="The solve commands on small models: LP, MIP, expand, limits, dense and sparse, verify and refusals, each with the output the built binary printed.">
+<link rel="canonical" href="https://alpibrusl.github.io/cancho-solve/examples.html">
+<meta name="robots" content="index, follow">
+<meta property="og:site_name" content="cancho-solve"><meta property="og:type" content="website"><meta property="og:title" content="cancho-solve examples: every command with its real output"><meta property="og:description" content="The solve commands on small models: LP, MIP, expand, limits, dense and sparse, verify and refusals, each with the output the built binary printed.">
+<meta name="color-scheme" content="light dark">
+<link rel="alternate" type="text/markdown" href="agents.md" title="cancho-solve, as an agent reads it">
+<link rel="stylesheet" href="assets/site.css"><link rel="stylesheet" href="assets/home.css"><link rel="stylesheet" href="assets/solve.css">
+</head>
+<body class="">
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="wrap">
+  <a class="brand" href="./">cancho-solve</a>
+  <nav aria-label="Site"><a href="index.html">Home</a><a href="examples.html" aria-current="page">Examples</a><a href="stories.html">Stories</a><a href="https://github.com/alpibrusl/cancho-solve">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="wrap pagehead"><p class="eyebrow">every command, with its real output</p><h1>Examples</h1><p class="lead">Each block is a model of <code>docs/examples</code> and what the built <code>solve</code> printed for it. The same models feed the <a href="stories.html">stories</a>.</p>
+<ul class="toc"><li><a href="#lp">An LP</a></li><li><a href="#mip">A MIP</a></li><li><a href="#expand">Expand</a></li><li><a href="#limits">Limits</a></li><li><a href="#engines">Engines</a></li><li><a href="#verify">Verify</a></li><li><a href="#refusals">Refusals</a></li></ul></div>
+<section class="sec" id="lp"><div class="wrap"><h2>A linear program</h2><p class="lead">Real variables, a maximised objective, three constraints: a bakery with flour, butter and oven time. <code>check</code> reads the model and says what kind it is; <code>run</code> solves it and re-checks its own answer (<code>verified</code>).</p><pre class="code" tabindex="0"><code>// A bakery has 40 kg of flour, 8 kg of butter and 10 oven hours today.
+// Per batch: a loaf needs 2 kg flour, 0.5 kg butter, 1 oven hour and sells for 12;
+// a tray of croissants needs 1 kg flour, 1.5 kg butter, 0.5 oven hour and sells for 18.
+// A batch can be fractional (half a tray is fine), so this is a linear program.
+var loaf   : real 0..20;
+var tray   : real 0..20;
+
+maximize sales: 12*loaf + 18*tray;
+
+subject to
+    flour:  2*loaf + 1*tray   &lt;= 40;
+    butter: 0.5*loaf + 1.5*tray &lt;= 8;
+    oven:   1*loaf + 0.5*tray &lt;= 10;</code></pre><div class="plabel">check and run</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve check &lt; bakery.sol</span>
+<span class="g">{"status":"ok","class":"LP","variables":2,"integer":0,"constraints":3,"nonzeros":6,"objective":"maximize"}</span>
+<span class="a">$ solve run &lt; bakery.sol</span>
+<span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2}}</span></pre></div><p class="fine"><code>iterations</code> is the number of simplex pivots; <code>max_violation</code> is the largest constraint violation of the printed point, computed by the printer.</p></div></section>
+<section class="sec" id="mip"><div class="wrap"><h2>A mixed-integer program</h2><p class="lead"><code>bool</code> and <code>int</code> variables make it a MIP: <code>run</code> branches. <code>stats.nodes</code> counts the LPs solved; <code>bound</code> is the best value the search can still not rule out. <code>--relax</code> drops integrality and solves the LP relaxation, whose value is the upper bound of a maximisation.</p><pre class="code" tabindex="0"><code>// A courier van carries at most 15 kg. Six parcels, each taken whole or left behind:
+// weight in kg, and the fee the courier earns for delivering it.
+param n   = 6;
+param w   = [12, 2, 1, 4, 7, 5];
+param fee = [4, 2, 1, 10, 8, 6];
+param cap = 15;
+
+var take[0..n] : bool;
+
+maximize income: sum i in 0..n: fee[i] * take[i];
+
+subject to
+    weight: sum i in 0..n: w[i] * take[i] &lt;= cap;</code></pre><div class="plabel">run and run --relax</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; van.sol</span>
+<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":6,"rows":1,"columns":6,"nodes":7,"branched":4,"method":"dense"}}</span>
+<span class="a">$ solve run --relax &lt; van.sol</span>
+<span class="g">{"status":"optimal","relaxed":true,"objective":22.857142857142858,"x":{"take[0]":0.0,"take[1]":0.0,"take[2]":0.0,"take[3]":1.0,"take[4]":0.8571428571428572,"take[5]":1.0},"verified":true,"max_violation":0.0,"stats":{"iterations":1,"rows":1,"columns":6}}</span></pre></div><p class="fine">The relaxation takes fractional parcels (fee 22.857142857142858 against 21.0 whole parcels), which is why the search has to branch.</p></div></section>
+<section class="sec" id="expand"><div class="wrap"><h2>The flat model</h2><p class="lead"><code>expand</code> prints what a solver reads: every variable with its bounds, the objective and every constraint, with the sums and loops written out. It is the model the checker and the verifier both stand on.</p><div class="plabel">expand</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve expand &lt; van.sol</span>
+<span class="g">{"variables":[{"name":"take[0]","kind":"bool","lo":0.0,"hi":1.0},{"name":"take[1]","kind":"bool","lo":0.0,"hi":1.0},"\u2026"],"objective":{"sense":"maximize","name":"income","constant":0.0,"terms":[[0,4.0],[1,2.0],[2,1.0],[3,10.0],[4,8.0],[5,6.0]]},"constraints":[{"name":"weight","sense":"&lt;=","rhs":15.0,"terms":[[0,12.0],[1,2.0],[2,1.0],[3,4.0],[4,7.0],[5,5.0]]}]}</span></pre></div><p class="fine">Two of the six variables shown; the rest are the same shape.</p></div></section>
+<section class="sec" id="limits"><div class="wrap"><h2>Stopping early</h2><p class="lead">A limit stops the search and says so: the status is <code>unknown</code> or <code>feasible</code>, with a <code>bound</code> (and <code>gap</code>, when there is an incumbent), and the exit status is 1. A limit never prints a wrong optimum.</p><div class="plabel">node and iteration limits</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run --node-limit 3 &lt; van.sol</span>
+<span class="g">{"status":"unknown","limit":"nodes","bound":22.857142857142858,"stats":{"iterations":3,"rows":1,"columns":6,"nodes":3,"branched":3,"method":"dense"}}</span>
+<span class="b"># exit status 1</span>
+<span class="a">$ solve run --iteration-limit 1 &lt; bakery.sol</span>
+<span class="g">{"status":"unknown","limit":"iterations","stats":{"iterations":1,"rows":3,"columns":2}}</span>
+<span class="b"># exit status 1</span></pre></div></div></section>
+<section class="sec" id="engines"><div class="wrap"><h2>Dense and sparse</h2><p class="lead"><code>--method dense|sparse|auto</code> picks the LP engine; <code>auto</code> (the default) takes the sparse one when the matrix is at most 4% full or the tableau would not fit. Both print the same optimum; the <code>stats</code> differ.</p><div class="plabel">--method</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run --method dense &lt; bakery.sol</span>
+<span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2}}</span>
+<span class="a">$ solve run --method sparse &lt; bakery.sol</span>
+<span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2,"refactorisations":2}}</span></pre></div></div></section>
+<section class="sec" id="verify"><div class="wrap"><h2>A second opinion</h2><p class="lead"><code>solve verify</code> takes a model and a <em>claimed</em> solution from any source and says whether it is feasible and has the objective it claims. A failure is a refusal: exit 2, a tag, and the violations. It does not prove optimality.</p><div class="plabel">verify</div><div class="replay"><pre class="screen" tabindex="0"><span class="d"># the model, a line holding exactly ---, then the claimed solution as JSON</span>
+<span class="a">$ (cat van.sol; echo ---; solve run &lt; van.sol) | solve verify</span>
+<span class="g">{"status":"verified","objective":21.0,"objective_checked":true,"tolerance":0.000001,"max_bound_violation":0.0,"max_integrality_violation":0.0,"max_row_violation":0.0,"variables":6,"rows":1,"proves":"feasibility and the objective value, not optimality"}</span>
+<span class="d"># a claim that overloads the van: the row `weight` does not hold</span>
+<span class="a">$ (cat van.sol; echo ---; &lt;take[0] set to 1&gt;) | solve verify</span>
+<span class="b">{"error":"solve.row-violated","message":"a constraint does not hold at the claimed values","repair":"the solution is infeasible; solve again","count":2,"violations":[{"rule":"solve.row-violated","what":"weight","value":11.0,"limit":0.000027},{"rule":"solve.objective-mismatch","what":"objective","value":4.0,"limit":0.000026}]}</span>
+<span class="b"># exit status 2</span>
+<span class="d"># a claim whose objective is not the one its values give</span>
+<span class="a">$ (cat van.sol; echo ---; &lt;objective set to 25&gt;) | solve verify</span>
+<span class="b">{"error":"solve.objective-mismatch","message":"the claimed objective is not the objective evaluated at the claimed values","repair":"claim the evaluated objective, or drop the objective member","count":1,"violations":[{"rule":"solve.objective-mismatch","what":"objective","value":4.0,"limit":0.000022}]}</span>
+<span class="b"># exit status 2</span>
+<span class="d"># a half parcel in a bool variable</span>
+<span class="a">$ (cat van.sol; echo ---; &lt;take[1] set to 0.5&gt;) | solve verify</span>
+<span class="b">{"error":"solve.not-integral","message":"a bool or int variable has a fractional claimed value","repair":"round the value, or solve again","count":2,"violations":[{"rule":"solve.not-integral","what":"take[1]","value":0.5,"limit":0.000001},{"rule":"solve.objective-mismatch","what":"objective","value":1.0,"limit":0.000021}]}</span>
+<span class="b"># exit status 2</span></pre></div><p class="fine">The tolerance is 1e-6 by default and is printed (<code>--tolerance T</code>). The verifier shares no code with the search (design.md section 20.1); what it shares is the parser and expander, because the claim is about that model.</p></div></section>
+<section class="sec" id="refusals"><div class="wrap"><h2>Refusals are data</h2><p class="lead">Every refusal is one JSON object on standard error with <code>error</code> (a stable tag), <code>message</code>, <code>repair</code> and, for a model, the position <code>at</code>. The exit status is 2. A model that is merely impossible is not a refusal: it is an answer, <code>infeasible</code>.</p><pre class="code" tabindex="0"><code>// A variable with no bounds: the checker refuses it before any solver sees it.
+var x : real;
+maximize x;
+subject to c: x &lt;= 4;</code></pre><div class="plabel">a variable with no bounds</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve check &lt; unbounded.sol</span>
+<span class="b">{"error":"solve.unbounded-domain","message":"a variable has no bounds","repair":"write the bounds: var x : real 0..10;","at":{"line":2,"col":5}}</span>
+<span class="b"># exit status 2</span></pre></div><pre class="code" tabindex="0"><code>// Two parcels that cannot both be taken and must both be taken.
+var a : bool;
+var b : bool;
+maximize a + b;
+subject to
+    both:   a + b &gt;= 2;
+    either: a + b &lt;= 1;</code></pre><div class="plabel">an impossible model is an answer</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; cannot.sol</span>
+<span class="g">{"status":"infeasible","stats":{"iterations":1,"rows":2,"columns":2,"nodes":1,"branched":0,"method":"dense"}}</span></pre></div><div class="plabel">an empty range, and a flag that does not exist</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ echo 'var x : int 5..2; minimize x;' | solve check</span>
+<span class="b">{"error":"solve.bad-bounds","message":"a bound is above the other, or an integer variable has a bound that is not whole","repair":"swap the bounds, or write whole numbers for an int variable","at":{"line":1,"col":9}}</span>
+<span class="b"># exit status 2</span>
+<span class="a">$ solve run --bogus</span>
+<span class="b">{"error":"solve.usage","message":"usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo] | verify [--tolerance T] | introspect | skill","repair":"pass one verb; check, expand, run and verify read the model on standard input"}</span>
+<span class="b"># exit status 2</span></pre></div></div></section>
+</main>
+<footer><div class="wrap">
+  <span class="brandline">cancho-solve</span><span>EUPL-1.2</span><span>written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
+  <a href="https://github.com/alpibrusl/cancho-solve">Repository</a><a href="https://github.com/alpibrusl/cancho-solve/blob/main/docs/design.md">Design</a><a href="agents.md">For agents</a>
+</div></footer>
+</body>
+</html>

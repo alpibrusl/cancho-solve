@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<!-- Written by scripts/site.py from real runs of the built `solve`. Do not edit by hand; run python3 scripts/site.py. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-solve: models checked before they are solved</title>
+<meta name="description" content="Linear and mixed-integer models as a command line. A bad model is refused with a rule tag and a repair; a claimed answer is re-checked without the search.">
+<link rel="canonical" href="https://alpibrusl.github.io/cancho-solve/">
+<meta name="robots" content="index, follow">
+<meta property="og:site_name" content="cancho-solve"><meta property="og:type" content="website"><meta property="og:title" content="cancho-solve: models checked before they are solved"><meta property="og:description" content="Linear and mixed-integer models as a command line. A bad model is refused with a rule tag and a repair; a claimed answer is re-checked without the search.">
+<meta name="color-scheme" content="light dark">
+<link rel="alternate" type="text/markdown" href="agents.md" title="cancho-solve, as an agent reads it">
+<link rel="stylesheet" href="assets/site.css"><link rel="stylesheet" href="assets/home.css"><link rel="stylesheet" href="assets/solve.css">
+</head>
+<body class="home">
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="wrap">
+  <a class="brand" href="./">cancho-solve</a>
+  <nav aria-label="Site"><a href="index.html" aria-current="page">Home</a><a href="examples.html">Examples</a><a href="stories.html">Stories</a><a href="https://github.com/alpibrusl/cancho-solve">GitHub</a></nav>
+</div></header>
+<main id="main">
+
+<div class="wrap hero">
+  <div>
+    <p class="eyebrow">linear and mixed-integer models &middot; one command line</p>
+    <h1>Models that are checked before they are solved, and checked again after.</h1>
+    <p class="sub">cancho-solve reads a small text model, refuses a bad one with a rule tag and the line that fixes it, solves it, and <code>solve verify</code> re-checks any claimed answer without the search. Standard input, JSON out, no network.</p>
+    <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="#watch">Watch it run</a><a class="btn" href="stories.html">Read the stories</a></div>
+  </div>
+  <div class="machine reveal">
+<svg viewBox="0 0 560 330" role="img" aria-labelledby="mc-t mc-d">
+<title id="mc-t">A model is checked, solved and verified; a bad model is refused with its repair</title>
+<desc id="mc-d">A model file slides along a belt through a check box and a solve box into a verified answer box. Below, a refusal appears with its rule tag and the repair that fixes it.</desc>
+<line class="belt" x1="20" y1="130" x2="540" y2="130"/>
+<g class="pkt"><rect class="row" x="22" y="118" width="30" height="8" rx="3"/><rect class="row" x="22" y="130" width="30" height="8" rx="3"/></g>
+<g class="pkt b"><rect class="row" x="22" y="118" width="30" height="8" rx="3"/><rect class="row" x="22" y="130" width="30" height="8" rx="3"/></g>
+<g class="pkt c"><rect class="row" x="22" y="118" width="30" height="8" rx="3"/><rect class="row" x="22" y="130" width="30" height="8" rx="3"/></g>
+<rect class="box" x="10" y="40" width="70" height="50" rx="10"/><text x="45" y="70" text-anchor="middle">.sol</text>
+<rect class="box" x="130" y="70" width="110" height="120" rx="12"/><text x="185" y="100" text-anchor="middle">check</text><text class="sm" x="185" y="170" text-anchor="middle">rule tags</text>
+<rect class="box" x="270" y="70" width="110" height="120" rx="12"/><text x="325" y="100" text-anchor="middle">solve</text><text class="sm" x="325" y="170" text-anchor="middle">simplex, B&amp;B</text>
+<rect class="okb" x="420" y="60" width="130" height="140" rx="12"/><text x="485" y="92" text-anchor="middle">answer</text>
+<g class="stamp"><rect x="436" y="130" width="98" height="26" rx="6" fill="none" stroke="var(--good)" stroke-width="2"/><text class="sm" x="485" y="148" text-anchor="middle" style="fill:var(--good)">verified</text></g>
+<g class="refuse"><rect class="nob" x="40" y="226" width="250" height="82" rx="10"/><text class="sm" x="54" y="250" style="fill:var(--bad)">refused &middot; exit 2</text><text class="sm" x="54" y="270">solve.unbounded-domain</text><text class="sm" x="54" y="290" style="fill:var(--good)">repair: write the bounds</text>
+<path d="M290 267H340" stroke="var(--good)" stroke-width="2" fill="none"/><rect class="okb" x="340" y="248" width="150" height="40" rx="8"/><text x="415" y="272" text-anchor="middle" class="sm">fix it, run again</text></g>
+</svg></div>
+</div>
+
+<div class="wrap">
+<h2 class="sr">What it does</h2>
+<div class="trio">
+  <div class="card reveal"><div class="art"><div class="say"><span class="e">{"error":"solve.unbounded-domain"}</span><span class="f">repair: var x : real 0..10;</span></div></div><h3>It says no, with the fix</h3><p>A refusal is one JSON line on standard error: a rule tag, a message, the repair and the position. 19 rules, listed by <code>solve introspect</code>.</p></div>
+  <div class="card reveal"><div class="art"><div class="say"><span class="e">solve.row-violated: weight 11</span><span class="f">verified: the model and the claim</span></div></div><h3>A second opinion</h3><p><code>solve verify</code> re-checks bounds, integrality, every row and the objective, from any solver&rsquo;s answer, with code that shares nothing with the search.</p></div>
+  <div class="card reveal"><div class="art"><div class="file"><i></i><i></i><i></i><em>dense = sparse</em></div></div><h3>Two engines, one answer</h3><p>A dense tableau and a sparse revised simplex solve the same models; a gate holds them to the same optimum on 104 LPs and 161 integer models.</p></div>
+</div>
+</div>
+
+<section class="sec" id="watch"><div class="wrap">
+  <h2>Watch it run</h2>
+  <p class="lead">Three sessions of the real binary. Nothing on this page is typed in: <code>scripts/site.py</code> runs <code>solve</code> on the files of <code>docs/examples</code> and prints what came back.</p>
+  <div class="replay" role="group" aria-labelledby="replay-t"><div class="bar"><i></i><i></i><i></i> <span id="replay-t">the same runs, replayed here</span> <button id="replay" type="button" hidden>&#8635; replay</button></div><div class="tabs" role="tablist" aria-label="Replayed runs" hidden><button type="button" role="tab" id="tab-bakery" aria-controls="screen-bakery" aria-selected="true" tabindex="0">A bakery, an LP</button><button type="button" role="tab" id="tab-van" aria-controls="screen-van" aria-selected="false" tabindex="-1">A van, and a second opinion</button><button type="button" role="tab" id="tab-fix" aria-controls="screen-fix" aria-selected="false" tabindex="-1">A refusal and its repair</button></div><div class="plabel">A bakery, an LP</div><pre id="screen-bakery" class="screen" role="tabpanel" aria-labelledby="tab-bakery" tabindex="0"><span class="d"># 40 kg flour, 8 kg butter, 10 oven hours: how many loaves and trays of croissants?</span>
+<span class="a">$ solve run &lt; bakery.sol</span>
+<span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2}}</span></pre><div class="plabel">A van, and a second opinion</div><pre id="screen-van" class="screen" role="tabpanel" aria-labelledby="tab-van" tabindex="0"><span class="d"># a courier van, six parcels, 15 kg: which to take (each whole or not at all)</span>
+<span class="a">$ solve run &lt; van.sol</span>
+<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":6,"rows":1,"columns":6,"nodes":7,"branched":4,"method":"dense"}}</span>
+<span class="d"># a second opinion that shares no code with the search: the model, a line ---, the claimed answer</span>
+<span class="a">$ (cat van.sol; echo ---; solve run &lt; van.sol) | solve verify</span>
+<span class="g">{"status":"verified","objective":21.0,"objective_checked":true,"tolerance":0.000001,"max_bound_violation":0.0,"max_integrality_violation":0.0,"max_row_violation":0.0,"variables":6,"rows":1,"proves":"feasibility and the objective value, not optimality"}</span>
+<span class="d"># the same claim with the 12 kg parcel added by hand</span>
+<span class="a">$ (cat van.sol; echo ---; &lt;the answer with take[0] changed to 1&gt;) | solve verify</span>
+<span class="b">{"error":"solve.row-violated","message":"a constraint does not hold at the claimed values","repair":"the solution is infeasible; solve again","count":2,"violations":[{"rule":"solve.row-violated","what":"weight","value":11.0,"limit":0.000027},{"rule":"solve.objective-mismatch","what":"objective","value":4.0,"limit":0.000026}]}</span>
+<span class="b"># exit status 2</span></pre><div class="plabel">A refusal and its repair</div><pre id="screen-fix" class="screen" role="tabpanel" aria-labelledby="tab-fix" tabindex="0"><span class="d"># a variable with no bounds is refused by the checker, before any solver sees it</span>
+<span class="a">$ solve check &lt; unbounded.sol</span>
+<span class="b">{"error":"solve.unbounded-domain","message":"a variable has no bounds","repair":"write the bounds: var x : real 0..10;","at":{"line":2,"col":5}}</span>
+<span class="b"># exit status 2</span>
+<span class="d"># the repair is a line of the model: give the bounds, and it runs</span></pre></div>
+  <p class="fine">Recorded from real runs, not a live session. For a solution of more than eight entries the zero entries are left out and the cut is marked with an ellipsis; every other byte is as printed.</p>
+</div></section>
+
+<section class="sec" id="stories"><div class="wrap">
+  <h2>Stories, from a bakery to a refusal</h2>
+  <p class="lead">A bakery, a courier van, a night rota, two depots and a shop floor that says no: each asks a little more of <code>solve</code>, and every number and figure is drawn from a run.</p>
+  <p class="cta"><a class="btn primary" href="stories.html">Read the stories</a><a class="btn" href="examples.html">See every command</a></p>
+</div></section>
+
+<section class="sec" id="how"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="lead">A model becomes a flat list of variables and rows. An LP is solved by a dual simplex, dense or sparse; a model with <code>bool</code> or <code>int</code> variables by branch and bound over the same simplex. Anything it cannot accept comes back with its repair.</p>
+  <div class="flow" tabindex="0" aria-label="Flow diagram, scrolls sideways on a narrow screen">
+  <svg viewBox="0 0 760 330" role="img" aria-labelledby="flow-t flow-d">
+    <title id="flow-t">From a model to a verified answer, and the refusal loop</title>
+    <desc id="flow-d">A model file goes to check, then to the solver, which is a dual simplex for an LP and branch and bound for a model with integer variables, then to an answer. Verify re-reads the model and the answer. If the model cannot be accepted, the tool refuses with a rule tag and a repair.</desc>
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
+    <rect class="box" x="10" y="30" width="130" height="64" rx="10"/><text x="75" y="58" text-anchor="middle">model.sol</text><text class="sm" x="75" y="78" text-anchor="middle">params, vars, sums</text>
+    <rect class="boxa" x="180" y="30" width="150" height="64" rx="10"/><text x="255" y="58" text-anchor="middle">check, expand</text><text class="sm" x="255" y="78" text-anchor="middle">flat rows, rule tags</text>
+    <rect class="boxa" x="370" y="30" width="170" height="64" rx="10"/><text x="455" y="58" text-anchor="middle">run</text><text class="sm" x="455" y="78" text-anchor="middle">simplex, branch and bound</text>
+    <rect class="ok" x="590" y="30" width="160" height="64" rx="10"/><text x="670" y="58" text-anchor="middle">answer (JSON)</text><text class="sm" x="670" y="78" text-anchor="middle">status, objective, x</text>
+    <path class="arrow dash" d="M140 62H178"/><path class="arrow dash" d="M330 62H368"/><path class="arrow dash" d="M540 62H588"/>
+    <path class="line" d="M670 94V122"/><path class="arrow dash" d="M670 122V148"/>
+    <rect class="box" x="560" y="150" width="180" height="54" rx="10"/><text x="650" y="174" text-anchor="middle">verify</text><text class="sm" x="650" y="193" text-anchor="middle">no code from the search</text>
+    <path class="arrow bad dash" d="M255 94V256"/>
+    <text class="smb" x="265" y="150">cannot accept it</text>
+    <rect class="no" x="150" y="258" width="330" height="58" rx="10"/><text x="315" y="282" text-anchor="middle">Refused, with data</text><text class="sm" x="315" y="302" text-anchor="middle">a rule tag, a position, a repair</text>
+    <path class="arrow bad dash" d="M150 287H75V98"/>
+    <text class="smb" x="86" y="200">fix the line,</text><text class="smb" x="86" y="217">then try again</text>
+  </svg>
+  </div>
+  <p class="fine sr">In words: a model goes to check, then to run, then to an answer; verify reads the model and the answer again. A model the tool cannot accept is refused with a rule tag, a position and a repair; you fix the line and try again.</p>
+</div></section>
+
+<section class="sec" id="results"><div class="wrap">
+  <h2>Measured, not promised</h2>
+  <div class="nums"><div class="n reveal"><b>168</b><span>test LPs agree with HiGHS</span></div><div class="n reveal"><b>194</b><span>generated MIPs agree with HiGHS and enumeration, 142 also with CP-SAT and SCIP</span></div><div class="n reveal"><b>13,414</b><span>runs of mutated and cut inputs reach no panic</span></div><div class="n reveal"><b>868</b><span>checks of the verifier, accepting what is feasible and refusing each fault by its tag</span></div></div>
+  <p class="fine">Counts from the gates&rsquo; own last lines on 2026-11-05, one machine; the commands are in the README and <a href="https://github.com/alpibrusl/cancho-solve/blob/main/docs/design.md">docs/design.md</a>. On the generated families of <code>scripts/bench_highs.py</code> the dual simplex takes 0.5x to 1.4x of HiGHS&rsquo;s dual simplex; the sparse engine is 0.4x to 1.5x of CLP on transportation and assignment, and CLP is far faster on large min-cost flows (design.md sections 17 and 18).</p>
+</div></section>
+
+<section class="sec" id="try"><div class="wrap">
+  <h2>Try it</h2>
+  <p class="lead">Build it from source with the compiler written in cancho; <code>cancho.toml</code> pins the revision.</p>
+<pre class="code" tabindex="0" id="build-cmds"><code>git clone https://github.com/alpibrusl/cancho                  # the compiler and its std
+git clone https://github.com/alpibrusl/cancho-solve &amp;&amp; cd cancho-solve
+# build the compiler at the revision cancho.toml pins (scripts/build-standalone.sh builds the one written in cancho), then:
+cancho build --bin solve                                         # writes build/solve
+build/solve run &lt; docs/examples/bakery.sol</code></pre>
+  <p class="fine">No release is published today, so the source is the way in. These steps are the README&rsquo;s; the page does not re-run them.</p>
+</div></section>
+
+<section class="sec" id="print"><div class="wrap">
+  <h2>What is not claimed</h2>
+  <div class="cards">
+    <div class="card"><h3>Not CP</h3><p>Constraint programming (<code>all_different</code>, <code>cumulative</code>, <code>element</code>) is reserved in the language and not built.</p></div>
+    <div class="card"><h3>MIP trails the best</h3><p>Branch and bound has no cuts or presolve: it needs more nodes than HiGHS and SCIP, and falls behind on larger instances (design.md section 19.5).</p></div>
+    <div class="card"><h3>Verify does not prove optimality</h3><p><code>solve verify</code> proves feasibility within a tolerance and the objective value; a feasible poor point verifies. Optimality is held by oracles in the gates, not by the verb.</p></div>
+    <div class="card"><h3>One machine, generated models</h3><p>Every timing is one machine and generated or textbook families, not MIPLIB. The <code>auto</code> choice between the dense and sparse engine is fitted on those families only.</p></div>
+  </div>
+</div></section>
+
+<section id="agent-view" aria-label="This page as an agent reads it"><div class="wrap">
+  <div class="bar"><h2 style="margin:0">For agents</h2><span>the same facts as the page, as Markdown, written by scripts/site.py</span><a href="agents.md">agents.md</a><a href="llms.txt">llms.txt</a></div>
+  <pre id="agent-full" tabindex="0">Loading agents.md &hellip;</pre>
+</div></section>
+<script src="assets/home.js"></script>
+<script src="assets/replay.js"></script>
+
+</main>
+<footer><div class="wrap">
+  <span class="brandline">cancho-solve</span><span>EUPL-1.2</span><span>written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
+  <a href="https://github.com/alpibrusl/cancho-solve">Repository</a><a href="https://github.com/alpibrusl/cancho-solve/blob/main/docs/design.md">Design</a><a href="agents.md">For agents</a>
+</div></footer>
+</body>
+</html>

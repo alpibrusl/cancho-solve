@@ -1,0 +1,14 @@
+/* Figures of the stories and the small additions of cancho-solve's pages (docs/index.html, examples.html, stories.html); written by hand. */
+.story { padding-top: 3rem; }
+.story .fig { margin: 1.2rem 0 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; overflow-x: auto; }
+.story .fig svg { display: block; width: 100%; max-width: 40rem; height: auto; }
+.fig .ft { fill: var(--soft); stroke: var(--line); }
+.fig .fb { fill: var(--accent); opacity: .85; }
+.fig .fbf { fill: var(--good); opacity: .9; }
+.fig .fo { fill: var(--soft); stroke: var(--line); stroke-dasharray: 4 3; }
+.fig text { fill: var(--fg); font: 600 13px var(--mono); }
+.fig .lb { fill: var(--fg); }
+.fig .tk { fill: var(--muted); font-weight: 400; font-size: 12px; }
+.fig .in { fill: var(--accent-fg); font-size: 12px; }
+.plabel { font: 600 .82rem var(--mono); color: var(--muted); margin: 1.1rem 0 .3rem; }
+.story pre.code { margin: 1rem 0 0; }
