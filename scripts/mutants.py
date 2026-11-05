@@ -113,7 +113,7 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             continue
         env = dict(os.environ, SOLVE=out)
         dead = False
-        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_mip.py", "check_cli.py", "check_iterations.py"):
+        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_mip.py", "check_nodes.py", "check_cli.py", "check_iterations.py"):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:
                 dead = True
                 break

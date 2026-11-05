@@ -101,7 +101,7 @@ def cpsat(model):
     dt = time.perf_counter() - t
     return ("optimal" if st == cp_model.OPTIMAL else "limit/other"), (sv.ObjectiveValue() if st in (cp_model.OPTIMAL, cp_model.FEASIBLE) else None), dt, sv.NumBranches()
 
-SETS = [("default", []), ("best-bound", ["--node-select", "best"]), ("pseudo-cost", ["--branching", "pseudo"]), ("best+pseudo", ["--node-select", "best", "--branching", "pseudo"]),
+SETS = [("depth+fractional", ["--node-select", "depth", "--branching", "fractional"]), ("best+fractional", ["--branching", "fractional"]), ("depth+pseudo", ["--node-select", "depth"]), ("best+pseudo (default)", []),
         ("no whole-obj cut", ["--experiment", "1"]), ("no rounding", ["--experiment", "2"]), ("far child first", ["--experiment", "4"])]
 
 def fmt(x, p=3):
