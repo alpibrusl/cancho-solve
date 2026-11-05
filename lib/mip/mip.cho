@@ -1,0 +1,631 @@
+edition 7;
+
+module solve.mip;
+
+// Mixed-integer solving by branch and bound over the dense dual simplex (docs/design.md section 19).
+//
+// A node is (parent, column, lo, hi, bound, depth, direction, distance): the root's bounds intersected with the changes on the path to the root. The LP of a node is reached either
+// by plunging (the child of the node just solved, in place) or by restoring (the root's optimal tableau, the path's bounds, `refresh`, the dual simplex). See lpeng.cho for the LP side.
+// Everything is in minimisation form inside the search (z = sign * (c x + c0)) and converted at the end. Nothing here reads a clock or a hash: the same model and options give the same bytes.
+
+import solve.layout as l;
+import solve.lpeng as le;
+import solve.simplex as sx;
+
+// results of `search`
+pub fn r_optimal() -> [] int {
+    return 0;
+}
+
+pub fn r_infeasible() -> [] int {
+    return 1;
+}
+
+pub fn r_feasible() -> [] int {
+    return 2;
+}
+
+pub fn r_unknown() -> [] int {
+    return 3;
+}
+
+pub fn r_too_large() -> [] int {
+    return 4;
+}
+
+pub fn max_node_limit() -> [] int {
+    return 2000000;
+}
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+fn ffloor(v: float) -> [] float {
+    if v > 1e15 || v < -1e15 {
+        return v;
+    }
+    let t = float_of(truncate(v));
+    if t > v {
+        return t - 1.0;
+    }
+    return t;
+}
+
+fn fround(v: float) -> [] float {
+    return ffloor(v + 0.5);
+}
+
+fn fmin(a: float, b: float) -> [] float {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+fn fmax(a: float, b: float) -> [] float {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn sense_sign[&a](ints: &a [int]) -> [] float {
+    if ints[l.h_sense()] == 2 {
+        return -1.0;
+    }
+    return 1.0;
+}
+
+// z = sign * (c x + c0) of the point v[base + col].
+fn objective_at[&a, &b, &c](ints: &a [int], fl: &b [float], v: &c [float], base: int) -> [] float {
+    var s = 0.0;
+    if ints[l.h_sense()] != 0 {
+        s = fl[l.obj_const(0)];
+        var t = 0;
+        while t < ints[l.h_obj_nnz()] {
+            s = s + fl[l.obj_coef(t)] * v[base + ints[l.obj_col(t)]];
+            t = t + 1;
+        }
+    }
+    return sense_sign(ints) * s;
+}
+
+// Every row holds at the point v[base + col], to `tol` scaled by 1 + |rhs|.
+fn rows_ok[&a, &b, &c](ints: &a [int], fl: &b [float], v: &c [float], base: int, tol: float) -> [] bool {
+    var r = 0;
+    while r < ints[l.h_ncons()] {
+        var act = 0.0;
+        var t = ints[l.row_start(r)];
+        while t < ints[l.row_start(r + 1)] {
+            act = act + fl[l.term_coef(t)] * v[base + ints[l.term_col(t)]];
+            t = t + 1;
+        }
+        let rhs = fl[l.row_rhs(r)];
+        let sc = tol * (1.0 + mag(rhs));
+        let s = ints[l.row_sense(r)];
+        if s == 0 && act > rhs + sc {
+            return false;
+        }
+        if s == 1 && act < rhs - sc {
+            return false;
+        }
+        if s == 2 && mag(act - rhs) > sc {
+            return false;
+        }
+        r = r + 1;
+    }
+    return true;
+}
+
+// Whether every term of the objective is a whole number times an integer column and the constant is whole: then z only takes whole values.
+fn objective_whole[&a, &b, &c](ints: &a [int], fl: &b [float], mi: &c [int], o_isint: int) -> [] bool {
+    if ints[l.h_sense()] == 0 {
+        return false;
+    }
+    if fl[l.obj_const(0)] != fround(fl[l.obj_const(0)]) {
+        return false;
+    }
+    var t = 0;
+    while t < ints[l.h_obj_nnz()] {
+        let cf = fl[l.obj_coef(t)];
+        if mi[o_isint + ints[l.obj_col(t)]] == 0 || cf != fround(cf) {
+            return false;
+        }
+        t = t + 1;
+    }
+    return true;
+}
+
+// Whether a node whose relaxation has value z can be cut, given the incumbent.
+fn prunable(z: float, have: bool, inc: float, whole: bool) -> [] bool {
+    if !have {
+        return false;
+    }
+    if whole {
+        return z > inc - 1.0 + 1e-6;
+    }
+    return z >= inc - 1e-9 * (1.0 + mag(inc));
+}
+
+// The rounded point tx[j] (integer columns rounded, others as the LP has them) of the LP in w, then offered as an incumbent. Returns true when it replaced the incumbent.
+fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: &!d [float], mi: &e [int], m: int, n: int, o_tx: int, o_isint: int, o_inc: int, o_ix: int, inc_have: bool, whole: bool) -> [] bool {
+    let o_v = m * (n + m) + (n + m);
+    var j = 0;
+    while j < n {
+        if mi[o_isint + j] == 1 {
+            mf[o_tx + j] = fround(w[o_v + j]);
+        } else {
+            mf[o_tx + j] = w[o_v + j];
+        }
+        j = j + 1;
+    }
+    if !rows_ok(ints, fl, mf, o_tx, 1e-7) {
+        return false;
+    }
+    let z = objective_at(ints, fl, mf, o_tx);
+    if inc_have && !(z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {
+        return false;
+    }
+    mf[o_inc] = z;
+    j = 0;
+    while j < n {
+        mf[o_ix + j] = mf[o_tx + j];
+        j = j + 1;
+    }
+    return true;
+}
+
+// The integer column to branch on, or -1 when every integer column is within `tol` of a whole number. mode 0: the fractional part closest to one half; mode 1: pseudo-costs.
+fn pick_branch[&c, &d, &e](w: &c [float], mf: &d [float], mi: &e [int], m: int, n: int, o_isint: int, o_pcu: int, o_pcd: int, o_psu: int, o_psd: int, mode: int, tol: float) -> [] int {
+    let o_v = m * (n + m) + (n + m);
+    var best = 0 - 1;
+    var bscore = 0.0;
+    var au = 1.0;
+    var ad = 1.0;
+    if mode == 1 {
+        var su = 0.0;
+        var cu = 0;
+        var sd = 0.0;
+        var cd = 0;
+        var j0 = 0;
+        while j0 < n {
+            su = su + mf[o_psu + j0];
+            cu = cu + mi[o_pcu + j0];
+            sd = sd + mf[o_psd + j0];
+            cd = cd + mi[o_pcd + j0];
+            j0 = j0 + 1;
+        }
+        if cu > 0 {
+            au = su / float_of(cu);
+        }
+        if cd > 0 {
+            ad = sd / float_of(cd);
+        }
+    }
+    var j = 0;
+    while j < n {
+        if mi[o_isint + j] == 1 {
+            let v = w[o_v + j];
+            let f = v - ffloor(v);
+            let dist = fmin(f, 1.0 - f);
+            if dist > tol {
+                var score = dist;
+                if mode == 1 {
+                    var eu = au;
+                    var ed = ad;
+                    if mi[o_pcu + j] > 0 {
+                        eu = mf[o_psu + j] / float_of(mi[o_pcu + j]);
+                    }
+                    if mi[o_pcd + j] > 0 {
+                        ed = mf[o_psd + j] / float_of(mi[o_pcd + j]);
+                    }
+                    score = fmax(ed * f, 1e-6) * fmax(eu * (1.0 - f), 1e-6);
+                }
+                if best < 0 || score > bscore {
+                    best = j;
+                    bscore = score;
+                }
+            }
+        }
+        j = j + 1;
+    }
+    return best;
+}
+
+// The least bound among the open nodes (1e300 when none).
+fn open_min[&a, &b](mf: &a [float], mi: &b [int], o_bd: int, o_open: int, nopen: int) -> [] float {
+    var best = 1e300;
+    var k = 0;
+    while k < nopen {
+        let b = mf[o_bd + mi[o_open + k]];
+        if b < best {
+            best = b;
+        }
+        k = k + 1;
+    }
+    return best;
+}
+
+// Takes the next node off the open list (mode 0 the most recent, mode 1 the least bound, ties to the older node), dropping those the incumbent cuts. Returns -1 when none is left.
+// The new length of the list is in mi[o_nopen].
+fn pick_open[&a, &b](mf: &a [float], mi: &!b [int], o_bd: int, o_open: int, o_nopen: int, mode: int, have: bool, inc: float, whole: bool) -> [] int {
+    var found = 0 - 1;
+    while found < 0 && mi[o_nopen] > 0 {
+        let cnt = mi[o_nopen];
+        var at = cnt - 1;
+        if mode == 1 {
+            var k = 0;
+            at = 0;
+            while k < cnt {
+                let bk = mf[o_bd + mi[o_open + k]];
+                let ba = mf[o_bd + mi[o_open + at]];
+                if bk < ba || bk == ba && mi[o_open + k] < mi[o_open + at] {
+                    at = k;
+                }
+                k = k + 1;
+            }
+        }
+        let id = mi[o_open + at];
+        mi[o_open + at] = mi[o_open + cnt - 1];
+        mi[o_nopen] = cnt - 1;
+        if !prunable(mf[o_bd + id], have, inc, whole) {
+            found = id;
+        }
+    }
+    return found;
+}
+
+// Everything the search keeps, laid out in two slices (`mf`, `mi`) and addressed by these offsets. kcap is the capacity of the node arena.
+fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int) -> [] int {
+    let big = n + m;
+    let nl = opts[1];
+    let sel = opts[2];
+    let bmode = opts[3];
+    let exper = opts[4];
+    // float offsets
+    let o_lo = 0;
+    let o_hi = kcap;
+    let o_bd = 2 * kcap;
+    let o_fr = 3 * kcap;
+    let c0 = 4 * kcap;
+    let o_bl = c0;
+    let o_bh = c0 + n;
+    let o_l0 = c0 + 2 * n;
+    let o_h0 = c0 + 3 * n;
+    let o_psu = c0 + 4 * n;
+    let o_psd = c0 + 5 * n;
+    let o_ix = c0 + 6 * n;
+    let o_tx = c0 + 7 * n;
+    let o_inc = c0 + 8 * n;
+    // int offsets
+    let o_par = 0;
+    let o_col = kcap;
+    let o_dep = 2 * kcap;
+    let o_dir = 3 * kcap;
+    let o_open = 4 * kcap;
+    let ic = 5 * kcap;
+    let o_isint = ic;
+    let o_pcu = ic + n;
+    let o_pcd = ic + 2 * n;
+    let o_nopen = ic + 3 * n;
+    // per-column data from the checked model
+    var k2 = 0;
+    while k2 < ints[l.h_nsym()] {
+        if ints[l.sym_class(k2)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k2)] {
+                let j = ints[l.sym_base(k2)] + off;
+                mf[o_l0 + j] = fl[l.sym_lo(k2)];
+                mf[o_h0 + j] = fl[l.sym_hi(k2)];
+                mf[o_bl + j] = fl[l.sym_lo(k2)];
+                mf[o_bh + j] = fl[l.sym_hi(k2)];
+                if ints[l.sym_kind(k2)] < 2 {
+                    mi[o_isint + j] = 1;
+                }
+                off = off + 1;
+            }
+        }
+        k2 = k2 + 1;
+    }
+    var whole = objective_whole(ints, fl, mi, o_isint);
+    if exper % 2 == 1 {
+        whole = false;
+    }
+    let sign = sense_sign(ints);
+    let dcap = 100 * big + 1000;
+    var have = false;
+    var inc = 0.0;
+    var iters = 0;
+    var nodes = 0;
+    var branched = 0;
+    var reason = 0;
+    var finished = false;
+    var extra = 1e300;
+    mi[o_nopen] = 0;
+    // ---- the root
+    var st = 0;
+    var z = 0.0;
+    var cur = 0;
+    mi[o_par] = 0 - 1;
+    mi[o_col] = 0 - 1;
+    mf[o_bd] = -1e300;
+    var running = true;
+    if nl < 1 {
+        reason = 1;
+        running = false;
+        extra = -1e300;
+    }
+    if running {
+        let remaining = opts[0] - iters;
+        if opts[0] >= 0 && remaining <= 0 {
+            reason = 2;
+            running = false;
+            extra = -1e300;
+        } else {
+            var lim = dcap;
+            if opts[0] >= 0 && remaining < dcap {
+                lim = remaining;
+            }
+            le.load(ints, fl, w, wi, m, n);
+            st = le.run(w, wi, stats, m, n, lim);
+            iters = iters + stats[0];
+            nodes = 1;
+            if st == sx.s_limit() {
+                reason = 3;
+                if opts[0] >= 0 && opts[0] - 0 <= dcap {
+                    reason = 2;
+                }
+                running = false;
+                extra = -1e300;
+            } else if st == sx.s_optimal() {
+                le.copy_f(rw, w);
+                le.copy_i(rwi, wi);
+                z = objective_at(ints, fl, w, m * big + big);
+            }
+        }
+    }
+    // ---- the loop: process the node `cur` whose LP was just solved (status st, value z), then choose and solve the next
+    while running {
+        var plunge = 0 - 1;
+        if st == sx.s_optimal() {
+            if cur > 0 && bmode == 1 {
+                let dl = fmax(z - mf[o_bd + cur], 0.0) / mf[o_fr + cur];
+                let cc = mi[o_col + cur];
+                if mi[o_dir + cur] == 0 {
+                    mf[o_psd + cc] = mf[o_psd + cc] + dl;
+                    mi[o_pcd + cc] = mi[o_pcd + cc] + 1;
+                } else {
+                    mf[o_psu + cc] = mf[o_psu + cc] + dl;
+                    mi[o_pcu + cc] = mi[o_pcu + cc] + 1;
+                }
+            }
+            if !prunable(z, have, inc, whole) {
+                var jb = pick_branch(w, mf, mi, m, n, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
+                if jb < 0 {
+                    // integral: offer the rounded point; if its rows fail at the tight tolerance, branch on the least integral column instead
+                    if offer(ints, fl, w, mf, mi, m, n, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                        have = true;
+                        inc = mf[o_inc];
+                        stats[6] = stats[6] + 1;
+                    } else if !rows_ok(ints, fl, mf, o_tx, 1e-7) {
+                        jb = pick_branch(w, mf, mi, m, n, o_isint, o_pcu, o_pcd, o_psu, o_psd, 0, 1e-9);
+                    }
+                } else if exper / 2 % 2 == 0 && mi[o_dep + cur] <= 8 {
+                    if offer(ints, fl, w, mf, mi, m, n, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                        have = true;
+                        inc = mf[o_inc];
+                        stats[6] = stats[6] + 1;
+                    }
+                }
+                if jb >= 0 && !prunable(z, have, inc, whole) {
+                    let v = le.value(w, m, n, jb);
+                    let fv = ffloor(v);
+                    let idn = stats[7] + 1;
+                    let idu = stats[7] + 2;
+                    if idu < kcap {
+                        stats[7] = stats[7] + 2;
+                        branched = branched + 1;
+                        mi[o_par + idn] = cur;
+                        mi[o_col + idn] = jb;
+                        mi[o_dep + idn] = mi[o_dep + cur] + 1;
+                        mi[o_dir + idn] = 0;
+                        mf[o_lo + idn] = mf[o_bl + jb];
+                        mf[o_hi + idn] = fv;
+                        mf[o_bd + idn] = z;
+                        mf[o_fr + idn] = fmax(v - fv, 1e-9);
+                        mi[o_par + idu] = cur;
+                        mi[o_col + idu] = jb;
+                        mi[o_dep + idu] = mi[o_dep + cur] + 1;
+                        mi[o_dir + idu] = 1;
+                        mf[o_lo + idu] = fv + 1.0;
+                        mf[o_hi + idu] = mf[o_bh + jb];
+                        mf[o_bd + idu] = z;
+                        mf[o_fr + idu] = fmax(fv + 1.0 - v, 1e-9);
+                        var first = idu;
+                        var second = idn;
+                        if v - fv < 0.5 {
+                            first = idn;
+                            second = idu;
+                        }
+                        if exper / 4 % 2 == 1 {
+                            let tmp = first;
+                            first = second;
+                            second = tmp;
+                        }
+                        mi[o_open + mi[o_nopen]] = second;
+                        mi[o_nopen] = mi[o_nopen] + 1;
+                        plunge = first;
+                    } else {
+                        reason = 1;
+                        running = false;
+                        extra = z;
+                    }
+                }
+            }
+        }
+        if running {
+            var nxt = plunge;
+            let inplace = plunge >= 0;
+            if !inplace {
+                nxt = pick_open(mf, mi, o_bd, o_open, o_nopen, sel, have, inc, whole);
+            }
+            if nxt < 0 {
+                finished = true;
+                running = false;
+            } else if nodes >= nl {
+                reason = 1;
+                extra = mf[o_bd + nxt];
+                running = false;
+            } else {
+                let remaining = opts[0] - iters;
+                if opts[0] >= 0 && remaining <= 0 {
+                    reason = 2;
+                    extra = mf[o_bd + nxt];
+                    running = false;
+                } else {
+                    var empty = false;
+                    if inplace {
+                        let cc = mi[o_col + nxt];
+                        mf[o_bl + cc] = fmax(mf[o_bl + cc], mf[o_lo + nxt]);
+                        mf[o_bh + cc] = fmin(mf[o_bh + cc], mf[o_hi + nxt]);
+                        if mf[o_bl + cc] > mf[o_bh + cc] {
+                            empty = true;
+                        }
+                        le.set_bounds(w, wi, m, n, cc, mf[o_bl + cc], mf[o_bh + cc]);
+                    } else {
+                        le.copy_f(w, rw);
+                        le.copy_i(wi, rwi);
+                        var j = 0;
+                        while j < n {
+                            mf[o_bl + j] = mf[o_l0 + j];
+                            mf[o_bh + j] = mf[o_h0 + j];
+                            j = j + 1;
+                        }
+                        var v = nxt;
+                        while v > 0 {
+                            let cc = mi[o_col + v];
+                            mf[o_bl + cc] = fmax(mf[o_bl + cc], mf[o_lo + v]);
+                            mf[o_bh + cc] = fmin(mf[o_bh + cc], mf[o_hi + v]);
+                            v = mi[o_par + v];
+                        }
+                        j = 0;
+                        while j < n {
+                            if mf[o_bl + j] > mf[o_bh + j] {
+                                empty = true;
+                            }
+                            le.set_bounds(w, wi, m, n, j, mf[o_bl + j], mf[o_bh + j]);
+                            j = j + 1;
+                        }
+                    }
+                    cur = nxt;
+                    nodes = nodes + 1;
+                    if empty {
+                        st = sx.s_infeasible();
+                    } else {
+                        le.refresh(w, wi, m, n);
+                        var lim = dcap;
+                        if opts[0] >= 0 && remaining < dcap {
+                            lim = remaining;
+                        }
+                        st = le.run(w, wi, stats, m, n, lim);
+                        iters = iters + stats[0];
+                        if st == sx.s_limit() {
+                            reason = 3;
+                            if opts[0] >= 0 && remaining <= dcap {
+                                reason = 2;
+                            }
+                            extra = mf[o_bd + nxt];
+                            running = false;
+                        } else if st == sx.s_optimal() {
+                            z = objective_at(ints, fl, w, m * big + big);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    stats[0] = iters;
+    stats[3] = nodes;
+    stats[4] = reason;
+    stats[5] = branched;
+    var code = r_unknown();
+    var bound = fmin(extra, open_min(mf, mi, o_bd, o_open, mi[o_nopen]));
+    if finished {
+        if have {
+            code = r_optimal();
+            bound = inc;
+        } else {
+            code = r_infeasible();
+        }
+    } else if have {
+        code = r_feasible();
+        bound = fmin(bound, inc);
+    }
+    if have {
+        fres[0] = sign * inc;
+        var j = 0;
+        while j < n {
+            x[j] = mf[o_ix + j];
+            j = j + 1;
+        }
+    }
+    fres[1] = 1e300;
+    if bound > -1e299 && bound < 1e299 {
+        fres[1] = sign * bound;
+    }
+    return code;
+}
+
+// Solves the MIP of the checked model. `x` (length at least n) gets the incumbent; `fres` (length 2) the objective and the best bound, both in the model's own sense (a bound of
+// 1e300 means none is known). `stats`: 0 iterations, 1 rows, 2 columns, 3 nodes whose LP was solved, 4 limit (0 none, 1 nodes, 2 iterations, 3 lp-limit), 5 nodes branched,
+// 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best), 3 branching (0 fractional,
+// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child).
+pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    stats[0] = 0;
+    stats[1] = m;
+    stats[2] = n;
+    stats[3] = 0;
+    stats[4] = 0;
+    stats[5] = 0;
+    stats[6] = 0;
+    stats[7] = 0;
+    fres[0] = 0.0;
+    fres[1] = 1e300;
+    if le.too_large(m, n) {
+        return r_too_large();
+    }
+    let kcap = 2 * opts[1] + 2;
+    let w = box_slice(heap, le.wlen(m, n), 0.0);
+    let wi = box_slice(heap, le.wilen(m, n), 0);
+    let rw = box_slice(heap, le.wlen(m, n), 0.0);
+    let rwi = box_slice(heap, le.wilen(m, n), 0);
+    let mf = box_slice(heap, 4 * kcap + 8 * n + 8, 0.0);
+    let mi = box_slice(heap, 5 * kcap + 3 * n + 8, 0);
+    var code = 0;
+    borrow mut w as &!w1 in {
+        borrow mut wi as &!w2 in {
+            borrow mut rw as &!w3 in {
+                borrow mut rwi as &!w4 in {
+                    borrow mut mf as &!w5 in {
+                        borrow mut mi as &!w6 in {
+                            code = core(ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, mi);
+    unbox_slice(heap, mf);
+    unbox_slice(heap, rwi);
+    unbox_slice(heap, rw);
+    unbox_slice(heap, wi);
+    unbox_slice(heap, w);
+    return code;
+}

@@ -4,7 +4,7 @@ against it; a mutant is killed when a gate fails. Needs CANCHO=the compiler. Usa
 import os, shutil, subprocess, sys, tempfile
 
 CANCHO = os.environ["CANCHO"]
-SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
+SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "lib/mip/lpeng.cho", "lib/mip/mip.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
 
 # (file, old, new, what it breaks)
 MUTANTS = [
@@ -56,6 +56,34 @@ MUTANTS = [
     ("lib/lp/simplex.cho", "w[o_w + i] = si;", "w[o_w + i] = w[o_w + i];", "a rewritten row keeps its old weight"),
     ("lib/lp/simplex.cho", "w[o_w + r] = sr;", "w[o_w + r] = 1.0;", "the pivot row's weight is not taken from the row"),
     ("lib/lp/simplex.cho", "si = si + nv * nv;", "si = si + nv;", "the weight sums values, not squares"),
+    # branch and bound (design.md section 19); gate 6 (check_mip.py) has to kill these
+    ("lib/mip/mip.cho", "let dist = fmin(f, 1.0 - f);", "let dist = fmax(f, 1.0 - f);", "an integral column is branched on"),
+    ("lib/mip/mip.cho", "return z >= inc - 1e-9 * (1.0 + mag(inc));", "return z > inc - 1e-9 * (1.0 + mag(inc));", "a node as good as the incumbent is not cut"),
+    ("lib/mip/mip.cho", "return z > inc - 1.0 + 1e-6;", "return z > inc - 2.0 + 1e-6;", "the whole-objective cut is off by one and cuts improving nodes"),
+    ("lib/mip/mip.cho", "if inc_have && !(z < mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {", "if inc_have && !(z > mf[o_inc] - 1e-9 * (1.0 + mag(mf[o_inc]))) {", "the incumbent is replaced by a worse point"),
+    ("lib/mip/mip.cho", "mf[o_tx + j] = fround(w[o_v + j]);", "mf[o_tx + j] = w[o_v + j];", "integer columns are not rounded"),
+    ("lib/mip/mip.cho", "mf[o_hi + idn] = fv;", "mf[o_hi + idn] = mf[o_bh + jb];", "the down child does not tighten its bound"),
+    ("lib/mip/mip.cho", "mf[o_lo + idu] = fv + 1.0;", "mf[o_lo + idu] = fv;", "the up child's bound is one too low"),
+    ("lib/mip/mip.cho", "le.refresh(w, wi, m, n);\n                        var lim = dcap;", "var lim = dcap;", "the basic values are not refreshed after a bound change"),
+    ("lib/mip/mip.cho", "v = mi[o_par + v];", "v = 0;", "restoring applies only the last change of the path"),
+    ("lib/mip/mip.cho", "if b < best {\n            best = b;", "if b > best {\n            best = b;", "the best bound is the largest open bound"),
+    ("lib/mip/mip.cho", "bmode, 1e-6);\n                if jb < 0 {", "bmode, 0.3);\n                if jb < 0 {", "a loose integrality tolerance"),
+    ("lib/mip/mip.cho", "} else if nodes >= nl {", "} else if nodes > nl {", "the node limit allows one more node"),
+    ("lib/mip/mip.cho", "if v - fv < 0.5 {", "if v - fv > 0.5 {", "the plunge goes to the far child"),
+    ("lib/mip/mip.cho", "if bk < ba || bk == ba && mi[o_open + k] < mi[o_open + at] {", "if bk > ba || bk == ba && mi[o_open + k] < mi[o_open + at] {", "best-bound selection takes the worst bound"),
+    ("lib/mip/mip.cho", "var at = cnt - 1;", "var at = 0;", "depth-first takes the oldest open node"),
+    ("lib/mip/mip.cho", "if !rows_ok(ints, fl, mf, o_tx, 1e-7) {\n        return false;", "if !rows_ok(ints, fl, mf, o_tx, 1.0) {\n        return false;", "a rounded point is accepted with violated rows"),
+    ("lib/mip/mip.cho", "if s == 2 && mag(act - rhs) > sc {", "if s == 2 && mag(act - rhs) > 1e9 {", "an equality row is not checked on a rounded point"),
+    ("lib/mip/mip.cho", "le.copy_f(w, rw);", "le.copy_f(rw, w);", "restoring overwrites the root tableau"),
+    ("lib/mip/mip.cho", "if mf[o_bl + cc] > mf[o_bh + cc] {\n                            empty = true;", "if mf[o_bl + cc] >= mf[o_bh + cc] {\n                            empty = true;", "a fixed column makes the node infeasible"),
+    ("lib/mip/mip.cho", "if opts[0] >= 0 && remaining <= 0 {\n            reason = 2;\n            running = false;\n            extra = -1e300;", "if opts[0] >= 0 && remaining < 0 {\n            reason = 2;\n            running = false;\n            extra = -1e300;", "the iteration budget allows one more LP"),
+    ("lib/mip/mip.cho", "fres[0] = sign * inc;", "fres[0] = inc;", "a maximisation prints its objective with the wrong sign"),
+    ("lib/mip/mip.cho", "if !prunable(mf[o_bd + id], have, inc, whole) {\n            found = id;", "if true {\n            found = id;", "open nodes are not cut when taken"),
+    ("lib/mip/mip.cho", "mf[o_psd + cc] = mf[o_psd + cc] + dl;", "mf[o_psd + cc] = mf[o_psd + cc];", "the down pseudo-cost is not updated"),
+    ("lib/mip/mip.cho", "score = fmax(ed * f, 1e-6) * fmax(eu * (1.0 - f), 1e-6);", "score = fmax(ed * f, 1e-6) + fmax(eu * (1.0 - f), 1e-6);", "the pseudo-cost score is a sum"),
+    ("lib/mip/lpeng.cho", "w[o_v + j] = lo;\n        } else {\n            w[o_v + j] = hi;", "w[o_v + j] = hi;\n        } else {\n            w[o_v + j] = lo;", "a nonbasic column moves to the wrong side after a bound change"),
+    ("lib/mip/lpeng.cho", "w[o_v + wi[i]] = -s;", "w[o_v + wi[i]] = s;", "refresh has the wrong sign"),
+    ("tools/solve/emit.cho", "w = json.put_bool(heap, w, worst <= 1e-6);", "w = json.put_bool(heap, w, true);", "verified is always true (MIP)"),
 ]
 
 def build(root, out):
@@ -85,7 +113,7 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             continue
         env = dict(os.environ, SOLVE=out, SOLVE_METHOD="dense")  # these mutants are of the dense solver (the default `auto` would send sparse models elsewhere)
         dead = False
-        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_cli.py", "check_iterations.py"):
+        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_mip.py", "check_nodes.py", "check_cli.py", "check_iterations.py"):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:
                 dead = True
                 break

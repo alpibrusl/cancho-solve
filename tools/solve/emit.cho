@@ -379,6 +379,128 @@ pub fn run_report[&h, &i, &t, &a, &b, &c, &d](heap: &!h Heap, io: &!i Io, text: 
     return 0;
 }
 
+// The largest distance of an integer column's value from a whole number.
+fn int_violation[&a, &c](ints: &a [int], x: &c [float]) -> [] float {
+    var worst = 0.0;
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 && ints[l.sym_kind(k)] < 2 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let v = x[ints[l.sym_base(k)] + off];
+                var f = v - float_of(truncate(v));
+                if f < 0.0 {
+                    f = -f;
+                }
+                if 1.0 - f < f {
+                    f = 1.0 - f;
+                }
+                if f > worst {
+                    worst = f;
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    return worst;
+}
+
+// The result of `run` on a model with integer variables (docs/design.md section 19.1). `code` is mip.search's result (0 optimal, 1 infeasible, 2 feasible, 3 unknown);
+// `fres` holds the objective and the best bound in the model's sense (a bound of 1e300 means none); `stats`: iterations, rows, columns, nodes, limit reason, branched.
+// Returns the exit status: 0 for a proof, 1 for a limit.
+pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, text: &t [byte], ints: &a [int], fl: &b [float], x: &c [float], stats: &d [int], fres: &e [float], code: int) -> [heap, io_write] int {
+    var w = json.writer(heap, 4096);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "status");
+    if code == 0 {
+        w = json.put_string(heap, w, "optimal");
+    } else if code == 1 {
+        w = json.put_string(heap, w, "infeasible");
+    } else if code == 2 {
+        w = json.put_string(heap, w, "feasible");
+    } else {
+        w = json.put_string(heap, w, "unknown");
+    }
+    if code >= 2 {
+        w = json.put_key(heap, w, "limit");
+        if stats[4] == 1 {
+            w = json.put_string(heap, w, "nodes");
+        } else if stats[4] == 2 {
+            w = json.put_string(heap, w, "iterations");
+        } else {
+            w = json.put_string(heap, w, "lp-limit");
+        }
+    }
+    if code == 0 || code == 2 {
+        let obj = fres[0] + 0.0;
+        w = json.put_key(heap, w, "objective");
+        w = json.put_float(heap, w, obj);
+    }
+    if (code == 0 || code >= 2) && fres[1] < 1e299 && fres[1] > -1e299 {
+        w = json.put_key(heap, w, "bound");
+        w = json.put_float(heap, w, fres[1] + 0.0);
+        if code == 2 {
+            var gap = mag(fres[0] - fres[1]);
+            if mag(fres[0]) > 1.0 {
+                gap = gap / mag(fres[0]);
+            }
+            w = json.put_key(heap, w, "gap");
+            w = json.put_float(heap, w, gap);
+        }
+    }
+    if code == 0 || code == 2 {
+        let viol2 = max_violation(ints, fl, x);
+        var worst = viol2;
+        let iv2 = int_violation(ints, x);
+        if iv2 > worst {
+            worst = iv2;
+        }
+        w = json.put_key(heap, w, "x");
+        w = json.begin_object(heap, w);
+        var k = 0;
+        while k < ints[l.h_nsym()] {
+            if ints[l.sym_class(k)] == 1 {
+                var off = 0;
+                while off < ints[l.sym_size(k)] {
+                    let nm = var_name(heap, text, ints, k, off);
+                    borrow nm as &nb in {
+                        w = json.put_key(heap, w, buffer.bytes(nb));
+                    }
+                    buffer.drop(heap, nm);
+                    w = json.put_float(heap, w, x[ints[l.sym_base(k)] + off] + 0.0);
+                    off = off + 1;
+                }
+            }
+            k = k + 1;
+        }
+        w = json.end_object(heap, w);
+        w = json.put_key(heap, w, "verified");
+        w = json.put_bool(heap, w, worst <= 1e-6);
+        w = json.put_key(heap, w, "max_violation");
+        w = json.put_float(heap, w, worst);
+    }
+    w = json.put_key(heap, w, "stats");
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "iterations");
+    w = json.put_int(heap, w, stats[0]);
+    w = json.put_key(heap, w, "rows");
+    w = json.put_int(heap, w, stats[1]);
+    w = json.put_key(heap, w, "columns");
+    w = json.put_int(heap, w, stats[2]);
+    w = json.put_key(heap, w, "nodes");
+    w = json.put_int(heap, w, stats[3]);
+    w = json.put_key(heap, w, "branched");
+    w = json.put_int(heap, w, stats[5]);
+    w = json.end_object(heap, w);
+    w = json.end_object(heap, w);
+    print_json(heap, io, w);
+    if code >= 2 {
+        return 1;
+    }
+    return 0;
+}
+
 // ------------------------------------------------------ the command surface ---
 
 fn command[&h](heap: &!h Heap, w: json.Writer, name: &static [byte], what: &static [byte], input: &static [byte], output: &static [byte]) -> [heap] json.Writer {
@@ -403,7 +525,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = json.begin_array(heap, w);
     w = command(heap, w, "check", "read a .sol model and check it", "a .sol model", "status, class (LP or MIP), sizes and objective sense");
     w = command(heap, w, "expand", "read a .sol model and print the expanded flat model", "a .sol model", "the flat model as JSON: variables, objective, constraints");
-    w = command(heap, w, "run", "solve the linear program of a .sol model (flags: --relax, --iteration-limit N)", "a .sol model", "status, objective, x by name, stats, verified");
+    w = command(heap, w, "run", "solve a .sol model: its LP, or by branch and bound when it has integer variables (flags: --relax, --iteration-limit N, --node-limit N, --node-select depth|best, --branching fractional|pseudo)", "a .sol model", "status (optimal, infeasible, feasible, unknown), objective, bound and gap when a limit stopped the search, x by name, stats, verified");
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
     w = json.end_array(heap, w);
@@ -412,7 +534,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = json.put_key(heap, w, "0");
     w = json.put_string(heap, w, "the model is accepted");
     w = json.put_key(heap, w, "1");
-    w = json.put_string(heap, w, "run stopped at a limit; status is unknown");
+    w = json.put_string(heap, w, "run stopped at a limit (status feasible or unknown)");
     w = json.put_key(heap, w, "2");
     w = json.put_string(heap, w, "a refusal: standard error holds {error, message, repair, at}");
     w = json.end_object(heap, w);
@@ -437,7 +559,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
 
 pub fn skill[&i](io: &!i Io) -> [io_write] int {
     io.write_all(io, "# solve: writing a model\n\n");
-    io.write_all(io, "`solve check < model.sol` checks a model; `solve expand < model.sol` prints it flat as JSON; `solve run [--relax] < model.sol` solves its linear program (integer variables need --relax until the MIP solver exists). A refusal is JSON on standard error with a rule tag and a position.\n\n");
+    io.write_all(io, "`solve check < model.sol` checks a model; `solve expand < model.sol` prints it flat as JSON; `solve run [--relax] < model.sol` solves it: the LP, or by branch and bound when it has bool/int variables (`--relax` solves the relaxation; `--node-limit N` and `--iteration-limit N` bound the search and give status feasible or unknown with a bound and gap). A refusal is JSON on standard error with a rule tag and a position.\n\n");
     io.write_all(io, "param n = 4;                       // a number, or [1, 2, 3] for an array (0-based)\n");
     io.write_all(io, "var x[0..n] : bool;                // or: int LO..HI, real LO..HI; one or two index ranges, half-open\n");
     io.write_all(io, "maximize total: sum i in 0..n: v[i] * x[i];   // a sum's body is one term; parenthesise a longer one\n");

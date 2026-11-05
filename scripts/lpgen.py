@@ -107,4 +107,85 @@ def mincost_flow(seed, nodes, arcs, cap=100):
         lhs = " ".join(("+ " if s > 0 else "- ") + f"f[{e}]" for e, s in out_terms[v])
         lhs = lhs[2:] if lhs.startswith("+ ") else "-" + lhs[2:]
         lines.append(f"    n{v}: {lhs} == {supply[v]};")
+
+# ---- S3 (docs/design.md section 19): mixed-integer families --------------------------------------------------------------------------------------------
+
+def knapsack(seed, n, correlated=True):
+    """0/1 knapsack, `maximize`, one row. Correlated values (v = w + noise) make the relaxation's gap hard for branch and bound."""
+    r = random.Random(seed)
+    w = [r.randint(10, 60) for _ in range(n)]
+    v = [x + r.randint(0, 10) if correlated else r.randint(10, 80) for x in w]
+    cap = sum(w) // 2
+    return (f"param n = {n};\nparam w = [{', '.join(map(str, w))}];\nparam v = [{', '.join(map(str, v))}];\nvar x[0..n] : bool;\n"
+            "maximize value: sum j in 0..n: v[j] * x[j];\nsubject to\n"
+            f"    cap: sum j in 0..n: w[j] * x[j] <= {cap};\n")
+
+def set_cover(seed, m, n, density=0.15):
+    """Minimise the cost of the sets (columns) that cover every element (row) at least once. Every row gets at least one column, so it is feasible."""
+    r = random.Random(seed)
+    cost = [r.randint(1, 20) for _ in range(n)]
+    rows = []
+    for i in range(m):
+        cols = [j for j in range(n) if r.random() < density]
+        if not cols:
+            cols = [r.randrange(n)]
+        rows.append(cols)
+    lines = [f"param c = [{', '.join(map(str, cost))}];", f"var s[0..{n}] : bool;", "minimize cost: sum j in 0..%d: c[j] * s[j];" % n, "subject to"]
+    for i, cols in enumerate(rows):
+        lines.append(f"    cover{i}: " + " + ".join(f"s[{j}]" for j in cols) + " >= 1;")
+    return "\n".join(lines) + "\n"
+
+def random_mip(seed, m, n, density=0.6, int_frac=1.0, infeasible=False):
+    """Like random_lp, but a fraction `int_frac` of the variables are `int` (the rest `real`); the right sides come from a hidden point that is whole on the
+    integer columns, so the model is feasible unless `infeasible` (a row that no point in the box satisfies)."""
+    r = random.Random(seed)
+    names = [f"v{j}" for j in range(n)]
+    isint = [r.random() < int_frac for _ in range(n)]
+    lo = [r.randint(-3, 2) for _ in range(n)]
+    hi = [l + r.randint(1, 9) for l in lo]
+    x0 = [r.randint(l, h) for l, h in zip(lo, hi)]
+    lines = [f"var {v} : {'int' if k else 'real'} {l}..{h};" for v, k, l, h in zip(names, isint, lo, hi)]
+    c = [r.randint(-9, 9) for _ in range(n)]
+    lines.append(("minimize " if r.random() < 0.5 else "maximize ") + _expr(c, names) + ";")
+    lines.append("subject to")
+    for i in range(m):
+        a = [r.randint(-9, 9) if r.random() < density else 0 for _ in range(n)]
+        if not any(a):
+            a[r.randrange(n)] = 1
+        act = sum(ai * xi for ai, xi in zip(a, x0))
+        k = r.random()
+        if k < 0.45:
+            op, rhs = "<=", act + r.randint(0, 6)
+        elif k < 0.9:
+            op, rhs = ">=", act - r.randint(0, 6)
+        else:
+            op, rhs = "==", act
+        lines.append(f"    c{i}: {_expr(a, names)} {op} {rhs};")
+    if infeasible:
+        j = r.randrange(n)
+        lines.append(f"    cut: {names[j]} >= {hi[j] + 1};")
+    return "\n".join(lines) + "\n"
+
+def equality_knapsack(seed, n, feasible=True):
+    """Subset-sum style: pick items so that the weights sum to exactly `target`, maximising the number picked. With `feasible` False every weight is even and the target odd,
+    so the model has no integer point while its relaxation has one."""
+    r = random.Random(seed)
+    w = [r.randint(5, 40) for _ in range(n)]
+    if feasible:
+        pick = [j for j in range(n) if r.random() < 0.4] or [0]
+        target = sum(w[j] for j in pick)
+    else:
+        w = [2 * x for x in w]
+        target = sum(w) // 3 | 1
+    return (f"param n = {n};\nparam w = [{', '.join(map(str, w))}];\nvar x[0..n] : bool;\nmaximize picked: sum j in 0..n: x[j];\nsubject to\n"
+            f"    target: sum j in 0..n: w[j] * x[j] == {target};\n")
+
+def bin_packing_lite(seed, items, bins):
+    """Assign items of integer size to a few bins of fixed capacity, minimising the number of bins opened: a symmetric model that is hard for plain branch and bound."""
+    r = random.Random(seed)
+    size = [r.randint(3, 9) for _ in range(items)]
+    cap = 12
+    lines = [f"param sz = [{', '.join(map(str, size))}];", f"var a[0..{items}, 0..{bins}] : bool;", f"var u[0..{bins}] : bool;", f"minimize bins: sum b in 0..{bins}: u[b];", "subject to"]
+    lines.append(f"    forall i in 0..{items}: one: sum b in 0..{bins}: a[i,b] == 1;")
+    lines.append(f"    forall b in 0..{bins}: capacity: sum i in 0..{items}: sz[i] * a[i,b] - {cap} * u[b] <= 0;")
     return "\n".join(lines) + "\n"

@@ -40,9 +40,9 @@ fn mag(x: float) -> [] float {
     return x;
 }
 
-// The core loop over the work slices. `w` holds T (m*N), D (N), val (N), lo (N), hi (N); `wi` holds basis (m), pos (N), at (N).
-// Returns a result code; `stats[0]` is the iteration count.
-fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], stats: &!e [int], m: int, n: int, limit: int) -> [] int {
+// Loads the model into the work slices: the logical variable of each row, the bounds, the slack basis, and each structural variable at the bound its cost prefers.
+// `w` holds T (m*N), D (N), val (N), lo (N), hi (N), the candidate ratios (N) and the dual steepest-edge weights (m); `wi` holds basis (m), pos (N), at (N) and the candidates (N).
+pub fn init_state[&a, &b, &c, &d](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], m: int, n: int) -> [] int {
     let big = n + m;
     let o_d = m * big;
     let o_v = o_d + big;
@@ -125,6 +125,24 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
         w[o_v + n + i] = act;
         i = i + 1;
     }
+    return 0;
+}
+
+// The dual simplex loop (docs/design.md sections 14, 17) from the state in `w`/`wi`: the state must be dual feasible and the basic values current. `stats[0]` is the
+// number of iterations of this call. Returns a result code.
+pub fn dual_loop[&c, &d, &e](w: &!c [float], wi: &!d [int], stats: &!e [int], m: int, n: int, limit: int) -> [] int {
+    let big = n + m;
+    let o_d = m * big;
+    let o_v = o_d + big;
+    let o_l = o_v + big;
+    let o_h = o_l + big;
+    let o_r = o_h + big;
+    let o_w = o_r + big;
+    let p_pos = m;
+    let p_at = m + big;
+    let p_c = m + 2 * big;
+    var i = 0;
+    var j = 0;
     var iter = 0;
     while true {
         // the basic variable that violates a bound most
@@ -313,6 +331,12 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
         iter = iter + 1;
     }
     return s_limit();
+}
+
+// The core loop over the work slices: the slack basis, then the dual simplex. Returns a result code; `stats[0]` is the iteration count.
+fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], stats: &!e [int], m: int, n: int, limit: int) -> [] int {
+    init_state(ints, fl, w, wi, m, n);
+    return dual_loop(w, wi, stats, m, n, limit);
 }
 
 // Solves the LP of the checked model in `ints`/`fl`. The values of the variables go to `x` (length at least the number of variables); `stats` gets
