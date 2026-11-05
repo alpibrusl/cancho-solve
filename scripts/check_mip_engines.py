@@ -66,6 +66,8 @@ for name, text in cases:
     if d.returncode not in (0, 1) or s.returncode not in (0, 1):
         continue
     a, b = json.loads(d.stdout), json.loads(s.stdout)
+    if "nodes" not in a["stats"]:
+        continue  # no integer column was drawn: an LP, which the gate of section 18.3.2 covers
     if a["stats"].get("method") != "dense" or b["stats"].get("method") != "sparse":
         fail(f"{name}: stats.method is {a['stats'].get('method')} / {b['stats'].get('method')}, wanted dense / sparse")
         continue
@@ -133,7 +135,7 @@ for name, text in cases[::3]:
             fail(f"{name} {extra}: sparse infeasible on a feasible model")
             continue
         b = got.get("bound")
-        if b is not None and (b < hobj - tol if not maxim else b > hobj + tol):
+        if b is not None and (b > hobj + tol if not maxim else b < hobj - tol):
             fail(f"{name} {extra}: bound {b} is on the wrong side of the optimum {hobj}")
         if got["status"] == "feasible" and (got["objective"] < hobj - tol if not maxim else got["objective"] > hobj + tol):
             fail(f"{name} {extra}: incumbent {got['objective']} is better than the optimum {hobj}")

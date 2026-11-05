@@ -492,6 +492,12 @@ pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, te
     w = json.put_int(heap, w, stats[3]);
     w = json.put_key(heap, w, "branched");
     w = json.put_int(heap, w, stats[5]);
+    w = json.put_key(heap, w, "method");
+    if stats[8] == 1 {
+        w = json.put_string(heap, w, "sparse");
+    } else {
+        w = json.put_string(heap, w, "dense");
+    }
     w = json.end_object(heap, w);
     w = json.end_object(heap, w);
     print_json(heap, io, w);

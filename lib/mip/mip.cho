@@ -33,6 +33,10 @@ pub fn r_too_large() -> [] int {
     return 4;
 }
 
+pub fn r_numerical() -> [] int {
+    return 5;
+}
+
 pub fn max_node_limit() -> [] int {
     return 2000000;
 }
@@ -152,8 +156,7 @@ fn prunable(z: float, have: bool, inc: float, whole: bool) -> [] bool {
 }
 
 // The rounded point tx[j] (integer columns rounded, others as the LP has them) of the LP in w, then offered as an incumbent. Returns true when it replaced the incumbent.
-fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: &!d [float], mi: &e [int], m: int, n: int, o_tx: int, o_isint: int, o_inc: int, o_ix: int, inc_have: bool, whole: bool) -> [] bool {
-    let o_v = m * (n + m) + (n + m);
+fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: &!d [float], mi: &e [int], m: int, n: int, o_v: int, o_tx: int, o_isint: int, o_inc: int, o_ix: int, inc_have: bool, whole: bool) -> [] bool {
     var j = 0;
     while j < n {
         if mi[o_isint + j] == 1 {
@@ -180,8 +183,7 @@ fn offer[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &c [float], mf: 
 }
 
 // The integer column to branch on, or -1 when every integer column is within `tol` of a whole number. mode 0: the fractional part closest to one half; mode 1: pseudo-costs.
-fn pick_branch[&c, &d, &e](w: &c [float], mf: &d [float], mi: &e [int], m: int, n: int, o_isint: int, o_pcu: int, o_pcd: int, o_psu: int, o_psd: int, mode: int, tol: float) -> [] int {
-    let o_v = m * (n + m) + (n + m);
+fn pick_branch[&c, &d, &e](w: &c [float], mf: &d [float], mi: &e [int], m: int, n: int, o_v: int, o_isint: int, o_pcu: int, o_pcd: int, o_psu: int, o_psd: int, mode: int, tol: float) -> [] int {
     var best = 0 - 1;
     var bscore = 0.0;
     var au = 1.0;
@@ -280,8 +282,9 @@ fn pick_open[&a, &b](mf: &a [float], mi: &!b [int], o_bd: int, o_open: int, o_no
 }
 
 // Everything the search keeps, laid out in two slices (`mf`, `mi`) and addressed by these offsets. kcap is the capacity of the node arena.
-fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int) -> [] int {
+fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int, eng: int, fi: &!s1 [int], ff: &!s2 [float]) -> [] int {
     let big = n + m;
+    var o_v = 0;
     let nl = opts[1];
     let sel = opts[2];
     let bmode = opts[3];
@@ -370,11 +373,21 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
             if opts[0] >= 0 && remaining < dcap {
                 lim = remaining;
             }
-            le.load(ints, fl, w, wi, m, n);
-            st = le.run(w, wi, stats, m, n, lim);
-            iters = iters + stats[0];
+            st = le.load(eng, ints, fl, w, wi, fi, ff, m, n);
+            if eng == 0 {
+                st = 0;
+            }
+            o_v = le.zoff(eng, wi, m, n);
+            if st == 0 {
+                st = le.run(eng, w, wi, fi, ff, stats, m, n, lim);
+                iters = iters + stats[0];
+            }
             nodes = 1;
-            if st == sx.s_limit() {
+            if st > sx.s_limit() {
+                reason = 4;
+                running = false;
+                extra = -1e300;
+            } else if st == sx.s_limit() {
                 reason = 3;
                 if opts[0] >= 0 && opts[0] - 0 <= dcap {
                     reason = 2;
@@ -384,7 +397,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
             } else if st == sx.s_optimal() {
                 le.copy_f(rw, w);
                 le.copy_i(rwi, wi);
-                z = objective_at(ints, fl, w, m * big + big);
+                z = objective_at(ints, fl, w, o_v);
             }
         }
     }
@@ -404,25 +417,25 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
                 }
             }
             if !prunable(z, have, inc, whole) {
-                var jb = pick_branch(w, mf, mi, m, n, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
+                var jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
                 if jb < 0 {
                     // integral: offer the rounded point; if its rows fail at the tight tolerance, branch on the least integral column instead
-                    if offer(ints, fl, w, mf, mi, m, n, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, have, whole) {
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
                     } else if !rows_ok(ints, fl, mf, o_tx, 1e-7) {
-                        jb = pick_branch(w, mf, mi, m, n, o_isint, o_pcu, o_pcd, o_psu, o_psd, 0, 1e-9);
+                        jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, 0, 1e-9);
                     }
                 } else if exper / 2 % 2 == 0 && mi[o_dep + cur] <= 8 {
-                    if offer(ints, fl, w, mf, mi, m, n, o_tx, o_isint, o_inc, o_ix, have, whole) {
+                    if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, have, whole) {
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
                     }
                 }
                 if jb >= 0 && !prunable(z, have, inc, whole) {
-                    let v = le.value(w, m, n, jb);
+                    let v = w[o_v + jb];
                     let fv = ffloor(v);
                     let idn = stats[7] + 1;
                     let idu = stats[7] + 2;
@@ -495,10 +508,11 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
                         if mf[o_bl + cc] > mf[o_bh + cc] {
                             empty = true;
                         }
-                        le.set_bounds(w, wi, m, n, cc, mf[o_bl + cc], mf[o_bh + cc]);
+                        le.set_bounds(eng, w, wi, m, n, cc, mf[o_bl + cc], mf[o_bh + cc]);
                     } else {
                         le.copy_f(w, rw);
                         le.copy_i(wi, rwi);
+                        le.copied(eng, wi);
                         var j = 0;
                         while j < n {
                             mf[o_bl + j] = mf[o_l0 + j];
@@ -517,7 +531,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
                             if mf[o_bl + j] > mf[o_bh + j] {
                                 empty = true;
                             }
-                            le.set_bounds(w, wi, m, n, j, mf[o_bl + j], mf[o_bh + j]);
+                            le.set_bounds(eng, w, wi, m, n, j, mf[o_bl + j], mf[o_bh + j]);
                             j = j + 1;
                         }
                     }
@@ -526,14 +540,20 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
                     if empty {
                         st = sx.s_infeasible();
                     } else {
-                        le.refresh(w, wi, m, n);
+                        st = le.refresh(eng, w, wi, fi, ff, m, n);
                         var lim = dcap;
                         if opts[0] >= 0 && remaining < dcap {
                             lim = remaining;
                         }
-                        st = le.run(w, wi, stats, m, n, lim);
-                        iters = iters + stats[0];
-                        if st == sx.s_limit() {
+                        if st == 0 {
+                            st = le.run(eng, w, wi, fi, ff, stats, m, n, lim);
+                            iters = iters + stats[0];
+                        }
+                        if st > sx.s_limit() {
+                            reason = 4;
+                            extra = mf[o_bd + nxt];
+                            running = false;
+                        } else if st == sx.s_limit() {
                             reason = 3;
                             if opts[0] >= 0 && remaining <= dcap {
                                 reason = 2;
@@ -541,7 +561,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
                             extra = mf[o_bd + nxt];
                             running = false;
                         } else if st == sx.s_optimal() {
-                            z = objective_at(ints, fl, w, m * big + big);
+                            z = objective_at(ints, fl, w, o_v);
                         }
                     }
                 }
@@ -553,6 +573,10 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
     stats[4] = reason;
     stats[5] = branched;
     var code = r_unknown();
+    if reason == 4 {
+        stats[0] = iters;
+        return r_numerical();
+    }
     var bound = fmin(extra, open_min(mf, mi, o_bd, o_open, mi[o_nopen]));
     if finished {
         if have {
@@ -583,7 +607,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r](ints: &a [int], fl: &b [
 // Solves the MIP of the checked model. `x` (length at least n) gets the incumbent; `fres` (length 2) the objective and the best bound, both in the model's own sense (a bound of
 // 1e300 means none is known). `stats`: 0 iterations, 1 rows, 2 columns, 3 nodes whose LP was solved, 4 limit (0 none, 1 nodes, 2 iterations, 3 lp-limit), 5 nodes branched,
 // 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best), 3 branching (0 fractional,
-// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child).
+// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
 pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
@@ -597,14 +621,18 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     stats[7] = 0;
     fres[0] = 0.0;
     fres[1] = 1e300;
-    if le.too_large(m, n) {
+    let eng = opts[5];
+    let nnz = ints[l.row_start(m)];
+    if le.too_large(eng, m, n, nnz) {
         return r_too_large();
     }
     let kcap = 2 * opts[1] + 2;
-    let w = box_slice(heap, le.wlen(m, n), 0.0);
-    let wi = box_slice(heap, le.wilen(m, n), 0);
-    let rw = box_slice(heap, le.wlen(m, n), 0.0);
-    let rwi = box_slice(heap, le.wilen(m, n), 0);
+    let w = box_slice(heap, le.wlen(eng, m, n, nnz), 0.0);
+    let wi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
+    let rw = box_slice(heap, le.wlen(eng, m, n, nnz), 0.0);
+    let rwi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
+    let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
+    let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
     let mf = box_slice(heap, 4 * kcap + 8 * n + 8, 0.0);
     let mi = box_slice(heap, 5 * kcap + 3 * n + 8, 0);
     var code = 0;
@@ -614,7 +642,11 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                 borrow mut rwi as &!w4 in {
                     borrow mut mf as &!w5 in {
                         borrow mut mi as &!w6 in {
-                            code = core(ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n);
+                            borrow mut fi as &!w7 in {
+                                borrow mut ff as &!w8 in {
+                                    code = core(ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8));
+                                }
+                            }
                         }
                     }
                 }
@@ -623,6 +655,8 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     }
     unbox_slice(heap, mi);
     unbox_slice(heap, mf);
+    unbox_slice(heap, ff);
+    unbox_slice(heap, fi);
     unbox_slice(heap, rwi);
     unbox_slice(heap, rw);
     unbox_slice(heap, wi);

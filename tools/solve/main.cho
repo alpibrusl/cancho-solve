@@ -39,13 +39,13 @@ fn slurp[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_read] buffer.Buffer {
 }
 
 // A model with integer variables: branch and bound (docs/design.md section 19). Options: the iteration budget (-1 none), the node limit, node selection, branching, experiment bits.
-fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a [int], f: &b [float], limit: int, onodes: int, osel: int, obr: int, oexp: int) -> [heap, io_write, err_write] int {
+fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a [int], f: &b [float], limit: int, onodes: int, osel: int, obr: int, oexp: int, eng: int) -> [heap, io_write, err_write] int {
     if onodes > mip.max_node_limit() {
         return emit.refuse(heap, io, "solve.too-large", "the node limit is above 2,000,000", "pass a smaller --node-limit", tx, 0 - 1);
     }
-    let opts = box_slice(heap, 5, 0);
+    let opts = box_slice(heap, 6, 0);
     let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
-    let st = box_slice(heap, 8, 0);
+    let st = box_slice(heap, 9, 0);
     let fr = box_slice(heap, 2, 0.0);
     var status = 0;
     borrow mut opts as &!ow in {
@@ -55,15 +55,19 @@ fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a 
         ov[2] = osel;
         ov[3] = obr;
         ov[4] = oexp;
+        ov[5] = eng;
         borrow mut xs as &!xw in {
             borrow mut st as &!sw in {
                 borrow mut fr as &!fw in {
                     let xv = contents(xw);
                     let sv = contents(sw);
                     let fv = contents(fw);
+                    sv[8] = eng;
                     let code = mip.search(heap, n, f, xv, sv, fv, ov);
                     if code == mip.r_too_large() {
                         status = emit.refuse(heap, io, "solve.too-large", "the dense tableau would exceed 32,000,000 cells", "reduce the model; the dense simplex is a first solver (docs/design.md section 14)", tx, 0 - 1);
+                    } else if code == mip.r_numerical() {
+                        status = emit.refuse(heap, io, "solve.numerical", "the sparse solver met a basis it could not factorise, a dual infeasibility it could not repair or a factorisation that did not fit", "run with --method dense", tx, 0 - 1);
                     } else {
                         status = emit.mip_report(heap, io, tx, n, f, xv, sv, fv, code);
                     }
@@ -97,7 +101,11 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                     status = emit.expand(heap, io, tx, n, f);
                 } else if mode == 2 {
                     if n[layout.h_nints()] > 0 && !relax {
-                        status = run_mip(heap, io, tx, n, f, limit, onodes, osel, obr, oexp);
+                        var eng = method;
+                        if method == 2 {
+                            eng = auto_method(n);
+                        }
+                        status = run_mip(heap, io, tx, n, f, limit, onodes, osel, obr, oexp, eng);
                     } else {
                         let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
                         let st = box_slice(heap, 4, 0);
