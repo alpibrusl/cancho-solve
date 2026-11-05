@@ -6,6 +6,7 @@ module solve.emit;
 
 import solve.layout as l;
 import solve.lex as lx;
+import solve.verify as vf;
 import std.buffer;
 import std.io;
 import std.json;
@@ -526,13 +527,14 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = command(heap, w, "check", "read a .sol model and check it", "a .sol model", "status, class (LP or MIP), sizes and objective sense");
     w = command(heap, w, "expand", "read a .sol model and print the expanded flat model", "a .sol model", "the flat model as JSON: variables, objective, constraints");
     w = command(heap, w, "run", "solve a .sol model: its LP, or by branch and bound when it has integer variables (flags: --relax, --iteration-limit N, --node-limit N, --node-select depth|best, --branching fractional|pseudo)", "a .sol model", "status (optimal, infeasible, feasible, unknown), objective, bound and gap when a limit stopped the search, x by name, stats, verified");
+    w = command(heap, w, "verify", "re-check a claimed solution against the model, sharing no code with the search (flag: --tolerance T, default 1e-6); proves feasibility and the objective value, not optimality", "a .sol model, a line holding exactly ---, then the solution as JSON: solve run's output, or {\"x\":{name:value,...},\"objective\":v}", "status verified with the objective, the maximum violations and the tolerance; a failure is a refusal (exit 2) whose tag is the first violation and whose violations member lists them");
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
     w = json.end_array(heap, w);
     w = json.put_key(heap, w, "exit_codes");
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "0");
-    w = json.put_string(heap, w, "the model is accepted");
+    w = json.put_string(heap, w, "the model is accepted (verify: the claimed solution is verified)");
     w = json.put_key(heap, w, "1");
     w = json.put_string(heap, w, "run stopped at a limit (status feasible or unknown)");
     w = json.put_key(heap, w, "2");
@@ -552,6 +554,18 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
         w = json.end_object(heap, w);
         code = code + 1;
     }
+    code = 1;
+    while code <= vf.rule_count() {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "rule");
+        w = json.put_string(heap, w, vf.rule_name(code));
+        w = json.put_key(heap, w, "message");
+        w = json.put_string(heap, w, vf.rule_message(code));
+        w = json.put_key(heap, w, "repair");
+        w = json.put_string(heap, w, vf.rule_repair(code));
+        w = json.end_object(heap, w);
+        code = code + 1;
+    }
     w = json.end_array(heap, w);
     w = json.end_object(heap, w);
     return print_json(heap, io, w);
@@ -566,6 +580,7 @@ pub fn skill[&i](io: &!i Io) -> [io_write] int {
     io.write_all(io, "subject to\n");
     io.write_all(io, "    cap: sum i in 0..n: w[i] * x[i] <= 15;\n");
     io.write_all(io, "    forall i in 0..n: lim: x[i] <= 1;       // one constraint for each i, named lim[i]\n\n");
+    io.write_all(io, "`solve verify` re-checks a claimed solution without the search: `(cat model.sol; echo ---; solve run < model.sol) | solve verify [--tolerance T]`. Standard input is the model, a line holding exactly ---, then JSON: solve run's output, or {\"x\":{\"x[0]\":1,...},\"objective\":v} (objective optional). Exit 0 and status verified when every bound, integrality and row holds within the tolerance (default 1e-6) and the objective is the evaluated one; otherwise a refusal on standard error whose tag (solve.bound-violated, solve.not-integral, solve.row-violated, solve.objective-mismatch) is the first violation and whose violations member lists up to 10. It proves feasibility, not optimality.\n\n");
     io.write_all(io, "Every variable needs bounds. Terms must be linear: a number times one variable; ranges, indices and bounds are constants.\n");
     io.write_all(io, "Reserved and not built yet: all_different, cumulative, element.\n");
     return 0;

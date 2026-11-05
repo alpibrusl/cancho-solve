@@ -43,10 +43,21 @@ python3 scripts/check_sparse.py        # sparse linear algebra against scipy spl
 python3 scripts/check_dense_vs_sparse.py # the dense solver as second oracle of the sparse one (design.md 18.3.2)
 python3 scripts/check_mip.py --ortools # integer models against HiGHS MILP, enumeration, CP-SAT and SCIP (design.md 19.2)
 python3 scripts/check_nodes.py        # exact node and iteration counts of the search (design.md 19.2)
+python3 scripts/check_verify.py       # `solve verify` accepts what is feasible and refuses faults with the right tag (design.md section 20; needs scipy)
+CANCHO=... python3 scripts/mutants_verify.py # deliberate changes to the verifier; every one must be killed or explained (design.md 20.6)
 python3 scripts/bench_highs.py        # time against HiGHS: docs/design.md sections 15 and 17
 CANCHO=... python3 scripts/mutants.py # deliberate changes to the checker; every one must be killed
 python3 scripts/gen_layout.py --check # lib/model/layout.cho is what the generator prints
 ```
+
+**Verifying a solution (`docs/design.md` section 20).** `solve verify` re-checks a claimed solution, from `solve run` or any other solver, without the search: bounds, integrality, every row and the objective, to a tolerance (`--tolerance`, default 1e-6). Standard input is the model, a line `---`, then the solution as JSON (`solve run`'s output as it stands, or `{"x":{"x[0]":1,...},"objective":5}`):
+
+```
+$ (cat model.sol; echo ---; solve run < model.sol) | solve verify
+{"status":"verified","objective":13.0,"objective_checked":true,"tolerance":0.000001,"max_bound_violation":0.0,...,"proves":"feasibility and the objective value, not optimality"}
+```
+
+A claim that fails is a refusal (exit 2) whose rule tag (`solve.bound-violated`, `solve.not-integral`, `solve.row-violated`, `solve.objective-mismatch`; `solve.bad-solution`, `solve.missing-variable`, `solve.unknown-variable` for a malformed claim) names the first violation, with a `violations` list. It does not prove optimality.
 
 Authority: the binary reads standard input and writes standard output and error; it reads no file and has no network. Licence EUPL-1.2, copyright Alpibru S.L.
 

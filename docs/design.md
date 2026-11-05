@@ -85,8 +85,8 @@ The canonical JSON is the same flat model; it is what `solve fmt --json` prints 
 * Coefficients and bounds are read as decimal literals and held as `float` (binary64) in S1–S3.
 * **Open:** the LP could instead run over exact rationals (`std.bignum` exists). That would make "optimal" a proof and the answer independent of rounding, at a
   large cost in time; whether it is worth it is decided by a measurement in S2 against HiGHS (section 7), not assumed here.
-* In S2 the answer is verified in exact arithmetic regardless (`solve verify` re-evaluates every row in rationals), so a wrong float answer is reported as
-  `"verified": false` and never printed as optimal.
+* In S2 the answer is re-checked regardless, so a wrong float answer is reported as `"verified": false` and never printed as optimal. **Corrected (section 20):** the first draft said `solve verify` would
+  re-evaluate every row in rationals; it evaluates in floating point (compensated summation) to a stated tolerance, so "feasible to 1e-6" is what is proved, not "exactly feasible". Exactness stays open.
 
 ## 5. Result and exit codes (choice)
 
@@ -140,7 +140,8 @@ cannot narrow its filesystem capability to it, and a stdin tool needs none). The
 | S1a | lexer, parser and checker for `var`, one objective, linear constraints; `solve check` | gates 1 and 3 pass (**measured, below**) |
 | S1b | `param`, indexed `var`, `sum`, `forall`; `expand`, `introspect`, `skill`; gate 2 | gates 1 to 3 pass and every mutant killed (**measured, section 13**) |
 | S2 | LP: dense dual simplex, `run`; measured against HiGHS | gate 4 passes for LP, mutants killed or explained, the gap to HiGHS measured (**section 15**). `verify` and the exactness decision (section 4) are **not done** |
-| S3 | MIP: branch and bound over the LP | gate 4 passes for MIP (**built, section 19**; `verify` is not) |
+| S3 | MIP: branch and bound over the LP | gate 4 passes for MIP (**built, section 19**) |
+| S3v | `solve verify` | **section 20** |
 | S4 | the page and the stories, `llms.txt` | each number written from a real run |
 | S5 | CP: a propagation and clause-learning core, the reserved globals | an OR-Tools CP-SAT oracle gate |
 
@@ -633,6 +634,102 @@ What this shows, and nothing past it:
 * **Hard random general-integer models are about even at 40x40 to 50x50** (2.8 s against 4.0 s HiGHS, 5.8 s SCIP, 2.8 s CP-SAT at 40x40; at 50x50 11.1 s against 9.1 s, 3.6 s and 10.3 s) and at 60x60 we stopped at 200,000 nodes without a proof where HiGHS (24.8 s, 101,212 nodes) and SCIP (16.7 s, 99,608) finished: our nodes there are about twice HiGHS's, and the node limit is what ended us.
 * **Node counts are not comparable one for one.** HiGHS counts after presolve and cuts, CP-SAT's `branches` are search decisions of a different kind, and ours include every node whose LP was solved including infeasible ones. They say where the gap is, not by how much.
 
-**Not claimed.** One seed per size, random and textbook families (no MIPLIB), one machine, one thread for the others (HiGHS's thread count through scipy was not controlled). Nothing about models with more than about 2,000 columns or rows (the dense tableau), nothing about numerically hard coefficients (every coefficient here is a small integer), nothing about equality-heavy or big-M models beyond the one bin-packing family, and no claim that the search is complete in the presence of numerical trouble (the drop-the-node corner of 19.1 was never reached). `solve verify` is not built.
+**Not claimed.** One seed per size, random and textbook families (no MIPLIB), one machine, one thread for the others (HiGHS's thread count through scipy was not controlled). Nothing about models with more than about 2,000 columns or rows (the dense tableau), nothing about numerically hard coefficients (every coefficient here is a small integer), nothing about equality-heavy or big-M models beyond the one bin-packing family, and no claim that the search is complete in the presence of numerical trouble (the drop-the-node corner of 19.1 was never reached). (`solve verify` was built afterwards: section 20.)
 
-**Open, in the order I would take them:** the sparse LP for the large instances (section 18); cover and Gomory cuts at the root and a presolve (these are what the 0 and 1 node results of HiGHS and SCIP on knapsack and bin packing come from); the dual objective cut-off *inside* the simplex loop; storing the parent's tableau for the sibling; reliability branching in place of pure pseudo-cost; `solve verify`.
+**Open, in the order I would take them:** the sparse LP for the large instances (section 18); cover and Gomory cuts at the root and a presolve (these are what the 0 and 1 node results of HiGHS and SCIP on knapsack and bin packing come from); the dual objective cut-off *inside* the simplex loop; storing the parent's tableau for the sibling; reliability branching in place of pure pseudo-cost.
+
+## 20. `solve verify`: re-checking a claimed solution (written before the code)
+
+The project rule (CLAUDE.md) is that every solution is re-checked by something that shares no code with the search. `run` already prints `"verified"` and `"max_violation"`,
+but that check lives in the printer, runs inside the same process on the solver's own array and uses one tolerance the caller cannot change. `solve verify` is the check as a
+verb of its own: it takes a model and a **claimed** solution from any source (our `run`, HiGHS, CP-SAT, a person) and says whether the claim is feasible and has the claimed
+objective value.
+
+### 20.1 What it proves, and what it does not **[choices]**
+
+It proves, for the model as `check` reads and expands it: every variable has a value; every value is within its bounds; every `bool`/`int` variable is whole; every row
+holds; and the objective, evaluated from the values, equals the claimed one. All within a tolerance that is printed. It does **not** prove optimality (a feasible but
+poor point verifies), does not prove infeasibility or unboundedness (a claim of `infeasible` has nothing to verify and is refused as `solve.bad-solution`), and does not check
+a claimed `bound` or `gap`. The tolerance makes the answer "feasible to within 1e-6", not "exactly feasible" (section 4 stays open).
+
+*Independence.* The verifier is `lib/verify/verify.cho`. It imports the model layout (`solve.layout`: the arrays `check` fills, which are the expanded model) and `std.json`, and
+nothing from `lib/lp`, `lib/mip` or `tools/solve/emit.cho`. Its names for variables, its sums and its tolerances are its own code. What it shares with the search is the
+parser and expander of the model, and it must: the claim is about *that* model. A bug there would be shared; gate 2 of section 7 (`expand` against hand-derived JSON) and
+`scripts/check_verify.py`'s Python evaluator (which evaluates the JSON of `solve expand`, not the layout) are what hold that part.
+
+### 20.2 The command **[choices]**
+
+```
+(cat model.sol; echo ---; solve run < model.sol) | solve verify [--tolerance T]
+```
+
+Standard input is the model, then a line holding exactly `---`, then the claimed solution as JSON. (`---` cannot occur in a model: it would be three minus signs with no operand. The
+binary still reads only standard input, section 6.) The solution is an object with `"x"`, an object from variable name (as `expand` prints them: `x[3]`, `a[0,1]`) to a number, and
+optionally `"objective"`, a number. Every other member (`status`, `bound`, `stats`, ...) is ignored, so the output of `solve run` is a valid solution as it stands. Without
+`"objective"` the objective is evaluated and reported but not compared. The model, not the solution, says which variables exist: a missing one and an unknown one are both refused.
+`--tolerance T` is a JSON number in [0, 0.1]; the default is 1e-6.
+
+*Success*, exit 0, one object:
+
+```
+{"status":"verified","objective":5.0,"objective_checked":true,"tolerance":1e-6,
+ "max_bound_violation":0.0,"max_integrality_violation":0.0,"max_row_violation":0.0,
+ "variables":4,"rows":4,"proves":"feasibility and the objective value, not optimality"}
+```
+
+*Failure*, exit **2**, nothing on standard output, on standard error a refusal like every other (`error` is the tag of the first violation found in the order bounds,
+integrality, rows, objective) with the extra member `violations`: up to 10 objects `{"rule", "what", "value", "limit"}` naming the variable or row (`"x[1]"`, `"capacity"`) and by how much,
+and `count`, the total number. A claimed solution that fails is a refused one: an agent branches on one exit status and one tag for every verb.
+
+### 20.3 Tolerances **[choices; the scales are measured in 20.5]**
+
+With `tol` the tolerance (default 1e-6, the one `run` uses for its own `verified`, so the two agree on what `run` prints):
+
+| Check | Violation | Refused when |
+|---|---|---|
+| bound | `lo - x` or `x - hi` | above `tol * (1 + abs(bound))` |
+| integrality (`bool`, `int`) | distance to the nearest whole number | above `tol` |
+| row | `act - rhs` (`<=`), `rhs - act` (`>=`), `abs(act - rhs)` (`==`) | above `tol * (1 + max(abs(rhs), sum of abs(a_j x_j)))` |
+| objective | `abs(claimed - evaluated)` | above `tol * (1 + abs(evaluated))` |
+
+The row scale includes the size of the terms, so that a solver's rounding in `x` (about 1e-9 of each value) is not refused. **The consequence is a loose check on rows of large cancelling terms**: with terms of 1e8 that cancel, the allowance is 1e-6 of 2e8, about 200 (`check_verify.py`: a violation of 50 passes, 500 is refused). A caller who needs less passes a smaller `--tolerance`; the activity is summed with Neumaier's compensated summation so that the
+verifier's own rounding is a factor of about 1e-16 below the tolerance rather than growing with the row length. The integrality check applies to the value as given, never to a rounded
+copy; the objective is evaluated from the values as given.
+
+### 20.4 Rule tags **[choices]**
+
+| Tag | Meaning |
+|---|---|
+| `solve.bad-solution` | no `---` line, the solution is not a JSON object with an `x` object of numbers, or it has no `x` (an `infeasible`/`unknown` result), or a repeated name |
+| `solve.missing-variable` | a variable of the model has no value in `x` |
+| `solve.unknown-variable` | `x` names a variable the model does not have |
+| `solve.bound-violated` | a value outside its bounds |
+| `solve.not-integral` | a `bool`/`int` variable with a fractional value |
+| `solve.row-violated` | a constraint that does not hold |
+| `solve.objective-mismatch` | the claimed objective differs from the evaluated one |
+
+A model that `check` refuses is refused with `check`'s tag (and a position in the model part). A bad flag is `solve.usage`. `solve.bad-solution` also covers a value that is not a number or not
+finite, a claimed `objective` that is not a finite number, and JSON that does not parse (the message gives the byte). A line `---\r` (a carriage return before the newline) is a separator too. `--tolerance 0` is allowed and
+means exact.
+
+### 20.5 Gates and mutants (written before the code) **[to run]**
+
+`scripts/check_verify.py` (gate 8; the scripts' numbering already clashes, see the README) can fail in both directions:
+1. *Accept*: every `tests/ok` and `tests/mip` model that `run` solves, and fixed-seed generated LPs, MIPs, assignments, knapsacks and set covers, solved by `run`, then verified from `run`'s own output.
+   Also the optimum from HiGHS (`scripts/hs.py`) for the generated ones: a solution from another solver verifies too. The Python side re-evaluates the JSON of `solve expand` itself and
+   must say the same (the verdict, and the maximum violations to 1e-9).
+2. *Refuse*: from each accepted solution, single faults: a bound broken (a variable moved past `hi` or below `lo`), a row broken (a variable moved inside its bounds until a row it is in fails, found
+   by the Python evaluator), an integer made fractional (+0.5 inside the bounds), the claimed objective changed. Each must be refused with the expected tag as `error`.
+3. *Shape*: missing and unknown variables, a non-object solution, no separator, an `infeasible` result, a model `check` refuses, `--tolerance` values (a fault of 1e-7 passes at the default and fails at
+   `--tolerance 1e-9`; 1e-5 the other way), a duplicate key.
+4. *No panic*: `check_cli.py` gains `verify` on cuts and mutations of model+solution inputs.
+5. *Mutants*: `scripts/mutants_verify.py` applies deliberate changes to `lib/verify/verify.cho` (a flipped comparison in each check, a dropped sense, a wrong scale, an off-by-one in the loop over variables, a skipped integrality kind) and runs the gate; every one must be killed, or each survivor is explained here.
+
+### 20.6 Results (measured)
+
+* **Gate 8** `python3 scripts/check_verify.py`: 868 checks, passing. 83 models accepted (the `tests/ok` and `tests/mip` models that `run` solves, and generated LPs, MIPs, mixed models, assignments, knapsacks and set covers), each twice (`run`'s output as it is, and the bare `{x, objective}`), 62 of them also with HiGHS's optimum as the claim. Faults refused with the right tag: 166 bounds, 81 rows, 64 integrality, 249 objective (a fault that does not apply is skipped and counted: 2 rows, 19 integrality). Before the code existed the gate failed on every check. The Python evaluator and the binary agree on the maximum violations to 1e-9, on in-tolerance noise too.
+* **No panic** (`check_cli.py`): `verify` on cuts and mutations of model + separator + solution, random solution bytes, and numbers of 1e999 and 1e308: 0 failures.
+* **Mutants** `CANCHO=... python3 scripts/mutants_verify.py`: 59 changes to `lib/verify/verify.cho`, 58 killed, 1 survivor, explained. The first run left 4 survivors and 1 invalid; the survivors showed gaps in the gate, which got edge cases (bound and integrality limits at scale 1 and 1001, the objective's relative tolerance, the compensated sum at `--tolerance 0`) and killed them. Mutant 27 adds `0.0 * x[0]` to each row sum: it is equivalent (every value is finite, so the product is exactly 0), kept as a control that the suite can report an equivalent mutant.
+* **Other gates** (all pass on this branch): language, expand, cli, HiGHS (168 cases), iterations, sparse linear algebra, dense against sparse (104), MIP (194 generated), nodes (42), `gen_layout --check`. The CP-SAT/SCIP leg of `check_mip.py --ortools` was **not run**: `ortools` is not installed here.
+
+**Not claimed / open.** A bug in the shared parser and expander would be shared by the verifier (section 20.1). The tolerance on a row scales with the size of its terms, loose for huge cancelling terms (20.3). A claimed `bound` or `gap` is not checked. No timing was measured; the check is linear in the model's nonzeros plus a lookup of each name (linear for names in the model's order, quadratic otherwise, unmeasured).

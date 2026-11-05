@@ -104,5 +104,25 @@ run(b"".join(b"var v%d : bool;\n" % i for i in range(16400)), "16400 variables")
 # very deep parentheses
 run(b"var x : real 0..1;\nminimize " + b"(" * 5000 + b"x" + b")" * 5000 + b";", "deep parentheses")
 
+# verify (docs/design.md section 20): model + separator + solution, cut and mutated anywhere; and random bytes after a valid model. Every outcome is a verdict or a refusal.
+for n, src in enumerate(files):
+    if len(src) < 600:
+        ex = subprocess.run([SOLVE, "run"], input=src, capture_output=True)
+        sol = ex.stdout if ex.returncode in (0, 1) and ex.stdout else b"{}"
+        whole = src + b"\n---\n" + sol
+        for cut in range(0, len(whole) + 1, 7):
+            run(whole[:cut], f"verify file {n} cut {cut}", ("verify",))
+        for _ in range(25):
+            b = bytearray(whole)
+            for _ in range(rng.randint(1, 4)):
+                b[rng.randrange(len(b))] = rng.choice(b"();:.,*/+-<>=[]{} \n\t\0\xff0129aevx\"{}:")
+            run(bytes(b), f"verify file {n} mutation", ("verify",))
+        for _ in range(8):
+            run(src + b"\n---\n" + bytes(rng.randrange(256) for _ in range(rng.randint(0, 60))), f"verify file {n} random solution", ("verify",))
+for body in (b"{}", b'{"x":{}}', b'{"x":{"x":1e999,"y":0}}', b'{"x":{"x":1e308,"y":-1e308},"objective":1e308}', b'{"x":{"x":1,"y":1},"objective":-1e999}', b'[' * 3000, b'{"x":' * 500):
+    run(b"var x : real 0..1;\nvar y : real -1..1;\nminimize x - y;\nsubject to c: x + y <= 1;\n---\n" + body, f"verify body {body[:20]!r}", ("verify",))
+run(b"---\n", "verify empty model", ("verify",))
+run(b"", "verify empty input", ("verify",))
+
 print("cli gate:", "FAILED" if bad else "passed", f"({runs} runs, {bad} failures)")
 sys.exit(1 if bad else 0)
