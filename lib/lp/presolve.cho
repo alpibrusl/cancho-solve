@@ -1,0 +1,497 @@
+edition 7;
+
+module solve.presolve;
+
+// The presolve of the LP path (docs/design.md section 21.3): the checked model is read into flat arrays ("raw": rows, bounds, costs), reduced by four rules (redundant and
+// infeasible rows by activity bounds, singleton and empty rows, fixed columns, dual fixing) until nothing changes, and written out again in the same layout with the live rows
+// and columns only. The postsolve is the value each removed column was fixed at.
+//
+// Layout of a raw problem. `ri` (ints) holds a header and the arrays; the offsets of the float arrays are in the header too.
+//   0 m, 1 n, 2 nnz, 3 rs (row starts, m + 1), 4 rc (columns of the entries), 5 cs (column starts, n + 1), 6 cr (rows of the entries by column), 7 rlive, 8 clive, 9 cmap, 10 rmap
+//   (floats:) 11 rv (coefficients by row), 12 cv (by column), 13 clo, 14 chi, 15 cost, 16 rlo, 17 rhi, 18 fix
+//   24 rows removed, 25 columns removed, 26 live rows, 27 live columns, 28 live entries.
+// A row has bounds `[rlo, rhi]`, an infinite side being -1e300 / 1e300; the columns are all boxed; `cost` is the minimised cost (the sign of a maximisation already applied).
+
+import solve.layout as l;
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// the tolerance of a bound (the solver's own)
+fn tol(b: float) -> [] float {
+    return 1e-9 * (1.0 + mag(b));
+}
+
+pub fn raw_ints_len(m: int, n: int, nnz: int) -> [] int {
+    return 32 + (m + 1) + nnz + (n + 1) + nnz + m + n + n + m + 8;
+}
+
+pub fn raw_floats_len(m: int, n: int, nnz: int) -> [] int {
+    return 32 + nnz + nnz + n + n + n + m + m + n + 8;
+}
+
+// Writes the header of a raw problem of m rows, n columns and nnz entries.
+pub fn raw_layout[&a](ri: &!a [int], m: int, n: int, nnz: int) -> [] int {
+    ri[0] = m;
+    ri[1] = n;
+    ri[2] = nnz;
+    var o = 32;
+    ri[3] = o;
+    o = o + m + 1;
+    ri[4] = o;
+    o = o + nnz;
+    ri[5] = o;
+    o = o + n + 1;
+    ri[6] = o;
+    o = o + nnz;
+    ri[7] = o;
+    o = o + m;
+    ri[8] = o;
+    o = o + n;
+    ri[9] = o;
+    o = o + n;
+    ri[10] = o;
+    var q = 32;
+    ri[11] = q;
+    q = q + nnz;
+    ri[12] = q;
+    q = q + nnz;
+    ri[13] = q;
+    q = q + n;
+    ri[14] = q;
+    q = q + n;
+    ri[15] = q;
+    q = q + n;
+    ri[16] = q;
+    q = q + m;
+    ri[17] = q;
+    q = q + m;
+    ri[18] = q;
+    ri[24] = 0;
+    ri[25] = 0;
+    ri[26] = m;
+    ri[27] = n;
+    ri[28] = nnz;
+    return 0;
+}
+
+// Reads the checked model (the checker's slices) into a raw problem laid out by `raw_layout`.
+pub fn read_raw[&a, &b, &c, &d](ints: &a [int], fl: &b [float], ri: &!c [int], rf: &!d [float]) -> [] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    let nnz = ints[l.row_start(m)];
+    raw_layout(ri, m, n, nnz);
+    let o_rs = ri[3];
+    let o_rc = ri[4];
+    let o_rv = ri[11];
+    let o_clo = ri[13];
+    let o_chi = ri[14];
+    let o_cost = ri[15];
+    let o_rlo = ri[16];
+    let o_rhi = ri[17];
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                rf[o_clo + ints[l.sym_base(k)] + off] = fl[l.sym_lo(k)];
+                rf[o_chi + ints[l.sym_base(k)] + off] = fl[l.sym_hi(k)];
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    var sign = 1.0;
+    if ints[l.h_sense()] == 2 {
+        sign = -1.0;
+    }
+    var i = 0;
+    while i < m {
+        let rhs = fl[l.row_rhs(i)];
+        let s = ints[l.row_sense(i)];
+        if s == 0 {
+            rf[o_rlo + i] = -1e300;
+            rf[o_rhi + i] = rhs;
+        } else if s == 1 {
+            rf[o_rlo + i] = rhs;
+            rf[o_rhi + i] = 1e300;
+        } else {
+            rf[o_rlo + i] = rhs;
+            rf[o_rhi + i] = rhs;
+        }
+        ri[o_rs + i] = ints[l.row_start(i)];
+        var t = ints[l.row_start(i)];
+        while t < ints[l.row_start(i + 1)] {
+            ri[o_rc + t] = ints[l.term_col(t)];
+            rf[o_rv + t] = fl[l.term_coef(t)];
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    ri[o_rs + m] = nnz;
+    var t = 0;
+    while t < ints[l.h_obj_nnz()] {
+        rf[o_cost + ints[l.obj_col(t)]] = sign * fl[l.obj_coef(t)];
+        t = t + 1;
+    }
+    return 0;
+}
+
+// Substitutes the live column j out at value v: the bounds of its live rows move by a v, and it is marked removed.
+fn remove_column[&a, &b](ri: &!a [int], rf: &!b [float], j: int, v: float) -> [] int {
+    let o_cs = ri[5];
+    let o_cr = ri[6];
+    let o_rlive = ri[7];
+    let ocv = ri[12];
+    let o_rlo = ri[16];
+    let o_rhi = ri[17];
+    var t = ri[o_cs + j];
+    while t < ri[o_cs + j + 1] {
+        let i = ri[o_cr + t];
+        if ri[o_rlive + i] == 1 {
+            let a = rf[ocv + t];
+            if rf[o_rlo + i] > -1e299 {
+                rf[o_rlo + i] = rf[o_rlo + i] - a * v;
+            }
+            if rf[o_rhi + i] < 1e299 {
+                rf[o_rhi + i] = rf[o_rhi + i] - a * v;
+            }
+        }
+        t = t + 1;
+    }
+    ri[ri[8] + j] = 0;
+    rf[ri[18] + j] = v;
+    ri[25] = ri[25] + 1;
+    return 0;
+}
+
+// One sweep over the rows. 0, 1 (infeasible), and `ri[29]` is set to 1 when something changed.
+fn row_sweep[&a, &b](ri: &!a [int], rf: &!b [float]) -> [] int {
+    let m = ri[0];
+    let o_rs = ri[3];
+    let o_rc = ri[4];
+    let o_rlive = ri[7];
+    let o_clive = ri[8];
+    let o_rv = ri[11];
+    let o_clo = ri[13];
+    let o_chi = ri[14];
+    let o_rlo = ri[16];
+    let o_rhi = ri[17];
+    var i = 0;
+    while i < m {
+        if ri[o_rlive + i] == 1 {
+            var cnt = 0;
+            var amin = 0.0;
+            var amax = 0.0;
+            var lastj = 0 - 1;
+            var lasta = 0.0;
+            var t = ri[o_rs + i];
+            while t < ri[o_rs + i + 1] {
+                let j = ri[o_rc + t];
+                if ri[o_clive + j] == 1 {
+                    let a = rf[o_rv + t];
+                    cnt = cnt + 1;
+                    lastj = j;
+                    lasta = a;
+                    if a > 0.0 {
+                        amin = amin + a * rf[o_clo + j];
+                        amax = amax + a * rf[o_chi + j];
+                    } else {
+                        amin = amin + a * rf[o_chi + j];
+                        amax = amax + a * rf[o_clo + j];
+                    }
+                }
+                t = t + 1;
+            }
+            let rlo = rf[o_rlo + i];
+            let rhi = rf[o_rhi + i];
+            if cnt == 0 {
+                if rlo > tol(rlo) || rhi < 0.0 - tol(rhi) {
+                    return 1;
+                }
+                ri[o_rlive + i] = 0;
+                ri[24] = ri[24] + 1;
+                ri[29] = 1;
+            } else if cnt == 1 && lasta != 0.0 {
+                // a singleton row: bounds on its column
+                var nl = -1e300;
+                var nh = 1e300;
+                if lasta > 0.0 {
+                    if rlo > -1e299 {
+                        nl = rlo / lasta;
+                    }
+                    if rhi < 1e299 {
+                        nh = rhi / lasta;
+                    }
+                } else {
+                    if rhi < 1e299 {
+                        nl = rhi / lasta;
+                    }
+                    if rlo > -1e299 {
+                        nh = rlo / lasta;
+                    }
+                }
+                var lo = rf[o_clo + lastj];
+                var hi = rf[o_chi + lastj];
+                if nl > lo {
+                    lo = nl;
+                }
+                if nh < hi {
+                    hi = nh;
+                }
+                if lo > hi {
+                    if lo - hi > 1e-9 * (1.0 + mag(lo) + mag(hi)) {
+                        return 1;
+                    }
+                    hi = lo;
+                }
+                rf[o_clo + lastj] = lo;
+                rf[o_chi + lastj] = hi;
+                ri[o_rlive + i] = 0;
+                ri[24] = ri[24] + 1;
+                ri[29] = 1;
+            } else {
+                if rhi < 1e299 && amin > rhi + tol(rhi) {
+                    return 1;
+                }
+                if rlo > -1e299 && amax < rlo - tol(rlo) {
+                    return 1;
+                }
+                let lowok = rlo < -1e299 || amin >= rlo - tol(rlo);
+                let highok = rhi > 1e299 || amax <= rhi + tol(rhi);
+                if lowok && highok {
+                    ri[o_rlive + i] = 0;
+                    ri[24] = ri[24] + 1;
+                    ri[29] = 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// One sweep over the columns: fixed columns are substituted out, dominated columns fixed at the bound they prefer (and substituted).
+fn col_sweep[&a, &b](ri: &!a [int], rf: &!b [float]) -> [] int {
+    let n = ri[1];
+    let o_cs = ri[5];
+    let o_cr = ri[6];
+    let o_rlive = ri[7];
+    let o_clive = ri[8];
+    let o_cv = ri[12];
+    let o_clo = ri[13];
+    let o_chi = ri[14];
+    let o_cost = ri[15];
+    let o_rlo = ri[16];
+    let o_rhi = ri[17];
+    var j = 0;
+    while j < n {
+        if ri[o_clive + j] == 1 {
+            let lo = rf[o_clo + j];
+            let hi = rf[o_chi + j];
+            if hi <= lo {
+                remove_column(ri, rf, j, lo);
+                ri[29] = 1;
+            } else {
+                // may the column be lowered (raised) without harm to any live row?
+                var canlow = rf[o_cost + j] >= 0.0;
+                var canhigh = rf[o_cost + j] <= 0.0;
+                var t = ri[o_cs + j];
+                while t < ri[o_cs + j + 1] && (canlow || canhigh) {
+                    let i = ri[o_cr + t];
+                    if ri[o_rlive + i] == 1 {
+                        let a = rf[o_cv + t];
+                        if a > 0.0 {
+                            if rf[o_rlo + i] > -1e299 {
+                                canlow = false;
+                            }
+                            if rf[o_rhi + i] < 1e299 {
+                                canhigh = false;
+                            }
+                        } else if a < 0.0 {
+                            if rf[o_rhi + i] < 1e299 {
+                                canlow = false;
+                            }
+                            if rf[o_rlo + i] > -1e299 {
+                                canhigh = false;
+                            }
+                        }
+                    }
+                    t = t + 1;
+                }
+                if canlow {
+                    remove_column(ri, rf, j, lo);
+                    ri[29] = 1;
+                } else if canhigh {
+                    remove_column(ri, rf, j, hi);
+                    ri[29] = 1;
+                }
+            }
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+// Reduces the raw problem in place (marks of live rows and columns, bounds, fixed values). Returns 0, or 1 when a row proves the model infeasible. On return ri[26 .. 28] are the
+// numbers of live rows, columns and entries of the reduced problem.
+pub fn presolve[&a, &b](ri: &!a [int], rf: &!b [float]) -> [] int {
+    let m = ri[0];
+    let n = ri[1];
+    let nnz = ri[2];
+    let o_rs = ri[3];
+    let o_rc = ri[4];
+    let o_cs = ri[5];
+    let o_cr = ri[6];
+    let o_rlive = ri[7];
+    let o_clive = ri[8];
+    let o_rv = ri[11];
+    let o_cv = ri[12];
+    // the column form (rows increasing within a column), and the marks
+    var j = 0;
+    while j <= n {
+        ri[o_cs + j] = 0;
+        j = j + 1;
+    }
+    var i = 0;
+    while i < m {
+        var t = ri[o_rs + i];
+        while t < ri[o_rs + i + 1] {
+            ri[o_cs + ri[o_rc + t] + 1] = ri[o_cs + ri[o_rc + t] + 1] + 1;
+            t = t + 1;
+        }
+        ri[o_rlive + i] = 1;
+        i = i + 1;
+    }
+    j = 0;
+    while j < n {
+        ri[o_cs + j + 1] = ri[o_cs + j + 1] + ri[o_cs + j];
+        ri[ri[9] + j] = 0;
+        ri[o_clive + j] = 1;
+        j = j + 1;
+    }
+    i = 0;
+    while i < m {
+        var t = ri[o_rs + i];
+        while t < ri[o_rs + i + 1] {
+            let cj = ri[o_rc + t];
+            let at = ri[o_cs + cj] + ri[ri[9] + cj];
+            ri[o_cr + at] = i;
+            rf[o_cv + at] = rf[o_rv + t];
+            ri[ri[9] + cj] = ri[ri[9] + cj] + 1;
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    var sweeps = 0;
+    ri[29] = 1;
+    while ri[29] == 1 && sweeps < 20 {
+        ri[29] = 0;
+        if row_sweep(ri, rf) != 0 {
+            return 1;
+        }
+        col_sweep(ri, rf);
+        sweeps = sweeps + 1;
+    }
+    // the sizes of what is left
+    var lm = 0;
+    var ln = 0;
+    var le = 0;
+    i = 0;
+    while i < m {
+        if ri[o_rlive + i] == 1 {
+            lm = lm + 1;
+            var t = ri[o_rs + i];
+            while t < ri[o_rs + i + 1] {
+                if ri[o_clive + ri[o_rc + t]] == 1 {
+                    le = le + 1;
+                }
+                t = t + 1;
+            }
+        }
+        i = i + 1;
+    }
+    j = 0;
+    while j < n {
+        if ri[o_clive + j] == 1 {
+            ln = ln + 1;
+        }
+        j = j + 1;
+    }
+    ri[26] = lm;
+    ri[27] = ln;
+    ri[28] = le;
+    return 0;
+}
+
+// Writes the reduced problem (the live rows and columns of `ri`/`rf`, sizes in ri[26 .. 28]) into `qi`/`qf`, whose layout `reduce` writes; `ri[9]` becomes the new index of each
+// live column (-1 for a removed one).
+pub fn reduce[&a, &b, &c, &d](ri: &!a [int], rf: &b [float], qi: &!c [int], qf: &!d [float]) -> [] int {
+    let m = ri[0];
+    let n = ri[1];
+    let m2 = ri[26];
+    let n2 = ri[27];
+    let nnz2 = ri[28];
+    raw_layout(qi, m2, n2, nnz2);
+    let o_rs = ri[3];
+    let o_rc = ri[4];
+    let o_rlive = ri[7];
+    let o_clive = ri[8];
+    let o_cmap = ri[9];
+    let o_rv = ri[11];
+    let o_clo = ri[13];
+    let o_chi = ri[14];
+    let o_cost = ri[15];
+    let o_rlo = ri[16];
+    let o_rhi = ri[17];
+    let q_rs = qi[3];
+    let q_rc = qi[4];
+    let q_rv = qi[11];
+    let q_clo = qi[13];
+    let q_chi = qi[14];
+    let q_cost = qi[15];
+    let q_rlo = qi[16];
+    let q_rhi = qi[17];
+    var nj = 0;
+    var j = 0;
+    while j < n {
+        if ri[o_clive + j] == 1 {
+            ri[o_cmap + j] = nj;
+            qf[q_clo + nj] = rf[o_clo + j];
+            qf[q_chi + nj] = rf[o_chi + j];
+            qf[q_cost + nj] = rf[o_cost + j];
+            nj = nj + 1;
+        } else {
+            ri[o_cmap + j] = 0 - 1;
+        }
+        j = j + 1;
+    }
+    var ni = 0;
+    var at = 0;
+    var i = 0;
+    while i < m {
+        if ri[o_rlive + i] == 1 {
+            qi[q_rs + ni] = at;
+            qf[q_rlo + ni] = rf[o_rlo + i];
+            qf[q_rhi + ni] = rf[o_rhi + i];
+            var t = ri[o_rs + i];
+            while t < ri[o_rs + i + 1] {
+                let cj = ri[o_rc + t];
+                if ri[o_clive + cj] == 1 {
+                    qi[q_rc + at] = ri[o_cmap + cj];
+                    qf[q_rv + at] = rf[o_rv + t];
+                    at = at + 1;
+                }
+                t = t + 1;
+            }
+            ni = ni + 1;
+        }
+        i = i + 1;
+    }
+    qi[q_rs + ni] = at;
+    return 0;
+}

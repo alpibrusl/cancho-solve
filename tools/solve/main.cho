@@ -107,10 +107,13 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                         if method == 2 {
                             eng = auto_method(n);
                         }
+                        if method == 3 {
+                            eng = 1;
+                        }
                         status = run_mip(heap, io, tx, n, f, limit, onodes, osel, obr, oexp, eng);
                     } else {
                         let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
-                        let st = box_slice(heap, 4, 0);
+                        let st = box_slice(heap, 6, 0);
                         borrow mut xs as &!xw in {
                             borrow mut st as &!sw in {
                                 let xv = contents(xw);
@@ -122,6 +125,8 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                                 }
                                 if use == 1 {
                                     code = revised.solve(heap, n, f, xv, sv, limit);
+                                } else if use == 3 {
+                                    code = revised.solve_unreduced(heap, n, f, xv, sv, limit);
                                 } else {
                                     code = simplex.solve(heap, n, f, xv, sv, limit);
                                 }
@@ -246,6 +251,10 @@ fn method_code[&a](text: &a [byte]) -> [] int {
     }
     if bytes.equal(text, "auto") {
         return 2;
+    }
+    // the sparse solver without its presolve (design.md 21.3), for the gates that compare the two
+    if bytes.equal(text, "sparse-raw") {
+        return 3;
     }
     return 0 - 1;
 }

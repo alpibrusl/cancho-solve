@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gate 7 (docs/design.md section 18.3.2): the dense solver is the second oracle of the sparse one. Both `solve run --relax --method dense` and `--method sparse` are run on
-fixed-seed models of every family, small and large (the large ones need many refactorisations: more than 64 iterations), and must agree on the status and, when optimal, on
+fixed-seed models of every family, small and large (the large ones need many refactorisations: more than 256 iterations, the interval since design.md 21.2), and must agree on the status and, when optimal, on
 the objective to 1e-6 relative; each printed solution must re-check (`verified`, and re-evaluated here against the expanded model); and with an iteration limit both must
 stop with `unknown`. The two share no code below the model checker. Usage: SOLVE=build/solve python3 scripts/check_dense_vs_sparse.py"""
 import json, os, random, sys
@@ -44,6 +44,12 @@ def scaled_lp(seed, m, n, spread):
 for spread in (1, 2, 3):
     for seed in range(4):
         cases.append((f"scaled {spread}.{seed}", scaled_lp(seed, 150, 300, spread)))
+# models of more than 256 iterations, so that the refactorisation at the interval (256 since design.md 21.2; 64 before) is met inside the loop and not only at the start and the end
+for seed in range(3):
+    cases.append((f"random long {seed}", lpgen.random_lp(970 + seed, 250 + 20 * seed, 500 + 40 * seed, 0.3)))
+    cases.append((f"flow long {seed}", lpgen.mincost_flow(980 + seed, 300 + 100 * seed, 1500 + 400 * seed)))
+for spread in (2, 3):
+    cases.append((f"scaled long {spread}", scaled_lp(40 + spread, 300, 600, spread)))
 bad = 0
 refac = 0
 for name, text in cases:
@@ -68,7 +74,7 @@ for name, text in cases:
     if v > 1e-6 or not b["verified"]:
         print(f"FAIL {name}: the sparse solution violates the model by {v}, verified={b['verified']}")
         bad += 1
-    if b["stats"]["iterations"] > 64:
+    if b["stats"]["iterations"] > 256:
         refac += 1
 
 # the iteration limit: both stop with `unknown` and the sparse solver counts the iterations it made
@@ -79,5 +85,5 @@ for method in ("dense", "sparse"):
     if p.returncode != 1 or r["status"] != "unknown" or r["stats"]["iterations"] != 5:
         print(f"FAIL iteration limit ({method}): status {p.returncode}, {p.stdout[:200]}")
         bad += 1
-print(f"dense-vs-sparse gate: {'FAILED' if bad else 'passed'} ({len(cases)} models, {refac} of them with more than 64 iterations, {bad} failures)")
+print(f"dense-vs-sparse gate: {'FAILED' if bad else 'passed'} ({len(cases)} models, {refac} of them with more than 256 iterations, {bad} failures)")
 sys.exit(1 if bad else 0)

@@ -3,7 +3,8 @@
 applies column replacements as product-form etas, and answers FTRAN (B x = b) and BTRAN (y B = c) for given vectors. This script builds random sparse bases, solves the same
 systems with scipy's SuperLU (`splu`), and requires, for every solve: the residual of the answer against the matrix as it stands after the replacements is at most 1e-9
 (scaled by 1 + |B||x|, a choice: the bases are filtered to condition number <= 1e6), and the answer agrees with SuperLU's to 1e-7 (same scaling).
-The multipliers of L must stay below 1 / threshold = 10. The fill of the factorisation is judged too: nnz(L)+nnz(U) at most 1.25 times SuperLU's (COLAMD ordering; measured 0.83 to 1.0 times on the families below), and no fill at all (nnz(L)+nnz(U) at most nnz(B)) on the network-like bases; a few bases with a tiny row singleton (condition about 1e8, residual judged only) need the threshold. Families: random sparse, network-like (forests of +-1 columns plus unit columns, the bases of transportation/assignment LPs), a dense block in a sparse frame (a real nucleus), and
+The multipliers of L must stay below 1 / threshold = 10. The fill of the factorisation is judged too: nnz(L)+nnz(U) at most 1.25 times SuperLU's (COLAMD ordering; measured 0.83 to 1.0 times on the families below), and no fill at all (nnz(L)+nnz(U) at most nnz(B)) on the network-like bases; a few bases with a tiny row singleton (condition about 1e8, residual judged only) need the threshold. The hypersparse solves (design.md 21.2) are judged on vectors with one to six nonzeros: the answer must equal the dense solve's bit for bit, every nonzero must be in the returned list, no index twice;
+every other eta goes in through the list form (`push_eta_h`). Families: random sparse, network-like (forests of +-1 columns plus unit columns, the bases of transportation/assignment LPs), a dense block in a sparse frame (a real nucleus), and
 badly scaled columns (the pivot threshold has to do work). Usage: SPARSE=build/sparsetest python3 scripts/check_sparse.py"""
 import json, os, random, subprocess, sys, zlib
 import numpy as np
@@ -222,6 +223,9 @@ for name, m, cols in families(int(os.environ.get("SEED", "11"))):
             worst = max(worst, res)
             if res > 1e-9 or (diff > 1e-7 and not ill):
                 print(f"FAIL {name}: {kind} residual {res:.2e}, difference from splu {diff:.2e} (m={m}, {len(etas)} etas)")
+                bad += 1
+            if not o["same"]:
+                print(f"FAIL {name}: {kind} differs from the dense solve of the same vector in at least one bit")
                 bad += 1
             if len(set(idx)) != len(idx) or any(not 0 <= i < m for i in idx):
                 print(f"FAIL {name}: {kind} list has a repeated or out-of-range index: {idx[:20]}")

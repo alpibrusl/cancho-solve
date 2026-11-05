@@ -24,10 +24,11 @@ EXACT = [
     ("assignment 30x30, seed 1", lpgen.assignment(1, 30), 63),
     ("transportation 20x40, seed 9", lpgen.transportation(9, 20, 40), 59),
 ]
-# The sparse solver also reports its refactorisations: the first, one for each 64 iterations, and the one that confirms the optimum (design.md 18.3.2). Exact, because the
+# The sparse solver also reports its refactorisations: the first, one for each 256 iterations (64 until design.md 21.2 raised the interval; the counts below were re-measured
+# then, deliberately, and the iteration counts did not move), and the one that confirms the optimum (design.md 18.3.2). Exact, because the
 # interval, the refactorisation before "optimal" and the eta file's capacity are each a place where a change leaves every answer right and only moves this number
 # (found by the mutants "optimal is declared without a refactorisation", "no refactorisation at the interval", "a refactorisation at every iteration").
-REFACTORS = {"random dense LP 200x400": 7, "random dense LP 100x200": 4, "multi-knapsack 1000 items, 50 rows": 4, "assignment 100x100": 5,
+REFACTORS = {"random dense LP 200x400": 3, "random dense LP 100x200": 2, "multi-knapsack 1000 items, 50 rows": 2, "assignment 100x100": 2,
              "assignment 30x30, seed 1": 2, "transportation 20x40, seed 9": 2}
 bad = 0
 def check_refactors(name, result):

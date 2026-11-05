@@ -110,7 +110,21 @@ fn attempt[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], p: int, w
                                 z = z + 1;
                             }
                             sparse.ftran(a, b, f[nnz..nnz + m]);
-                            status = sparse.push_eta(a, b, json.to_int(src, tape, json.get(src, tape, en2, "r")), f[nnz..nnz + m]);
+                            if q2 % 2 == 0 {
+                                status = sparse.push_eta(a, b, json.to_int(src, tape, json.get(src, tape, en2, "r")), f[nnz..nnz + m]);
+                            } else {
+                                // every other eta goes in through the list form, the nonzeros listed in decreasing order (it sorts them)
+                                var cnt0 = 0;
+                                z = m;
+                                while z > 0 {
+                                    z = z - 1;
+                                    if f[nnz + z] != 0.0 {
+                                        d[m + 1 + nnz + cnt0] = z;
+                                        cnt0 = cnt0 + 1;
+                                    }
+                                }
+                                status = sparse.push_eta_h(a, b, json.to_int(src, tape, json.get(src, tape, en2, "r")), f[nnz..nnz + m], d[m + 1 + nnz..m + 1 + nnz + m], cnt0);
+                            }
                             en2 = json.skip(tape, en2);
                             q2 = q2 + 1;
                         }
@@ -190,10 +204,22 @@ fn attempt[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], p: int, w
                                         }
                                         z = z + 1;
                                     }
+                                    // the dense solve of the same vector, to compare bit for bit
+                                    fill_floats(src, tape, vn, f, nnz + m);
                                     if which == 0 {
                                         cnt = sparse.ftran_h(a, b, f[nnz..nnz + m], d[m + 1 + nnz..m + 1 + nnz + m], cnt);
+                                        sparse.ftran(a, b, f[nnz + m..nnz + 2 * m]);
                                     } else {
                                         cnt = sparse.btran_h(a, b, f[nnz..nnz + m], d[m + 1 + nnz..m + 1 + nnz + m], cnt);
+                                        sparse.btran(a, b, f[nnz + m..nnz + 2 * m]);
+                                    }
+                                    var same = true;
+                                    z = 0;
+                                    while z < m {
+                                        if f[nnz + z] != f[nnz + m + z] {
+                                            same = false;
+                                        }
+                                        z = z + 1;
                                     }
                                     w = json.begin_object(heap, w);
                                     w = json.put_key(heap, w, "x");
@@ -204,6 +230,8 @@ fn attempt[&h, &s, &t](heap: &!h Heap, src: &s [byte], tape: &t [int], p: int, w
                                         z = z + 1;
                                     }
                                     w = json.end_array(heap, w);
+                                    w = json.put_key(heap, w, "same");
+                                    w = json.put_bool(heap, w, same);
                                     w = json.put_key(heap, w, "idx");
                                     w = json.begin_array(heap, w);
                                     z = 0;

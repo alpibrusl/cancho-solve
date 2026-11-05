@@ -371,6 +371,13 @@ pub fn run_report[&h, &i, &t, &a, &b, &c, &d](heap: &!h Heap, io: &!i Io, text: 
         w = json.put_key(heap, w, "refactorisations");
         w = json.put_int(heap, w, stats[3]);
     }
+    if stats[4] > 0 || stats[5] > 0 {
+        // what the presolve of the sparse solver removed (design.md 21.3)
+        w = json.put_key(heap, w, "presolve_rows");
+        w = json.put_int(heap, w, stats[4]);
+        w = json.put_key(heap, w, "presolve_columns");
+        w = json.put_int(heap, w, stats[5]);
+    }
     w = json.end_object(heap, w);
     w = json.end_object(heap, w);
     print_json(heap, io, w);
