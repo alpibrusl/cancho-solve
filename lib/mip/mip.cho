@@ -773,9 +773,11 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
                         }
                         le.set_bounds(eng, w, wi, m, n, cc, mf[o_bl + cc], mf[o_bh + cc]);
                     } else {
-                        le.copy_f(w, rw);
-                        le.copy_i(wi, rwi);
-                        le.copied(eng, wi);
+                        if exper / 2097152 % 2 == 0 {
+                            le.copy_f(w, rw);
+                            le.copy_i(wi, rwi);
+                            le.copied(eng, wi);
+                        }
                         var j = 0;
                         while j < n {
                             mf[o_bl + j] = mf[o_l0 + j];

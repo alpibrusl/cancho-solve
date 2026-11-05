@@ -1113,3 +1113,33 @@ At 12 x 12 the same quotient is 62 microseconds per iteration, and the cold solv
 **Decision.** The mechanism stays (it is correct and gated) but **opt-in**: experiment bit 65536 turns aging on (age 8, cap 2 x, stall limit 300; bits 4096 to 32768 hold another age, bits 131072 to 917504 another cap); the default is 22.3's, every cut kept and a stall limit of 150, and every gate table is again that of 22.3. What would make aging pay, **open**: a pool of the removed cuts, so that a cut found again is recognised (and does not count as progress or as a cut found), or a stall rule on the bound's progress per second of rounds rather than per round.
 
 **What the gate and the mutants say.** `check_warm.py` holds the aging runs exactly (tight 10 x 12 and 12 x 12 with the cap of one: 417 and 511 rows removed; 24 x 16 with aging: more than 1,000 removed, root bound at least 172.89, at most 30,000 iterations) and that no row leaves without the bit. `mutants_warm.py`: 40 mutants, **32 killed, 7 survive (all explained below as not tested), 1 equivalent**: (23) *a row whose logical is nonbasic may leave* and (24) *the cuts just appended may leave too* are equivalent where the rows come from: a row slack beyond the tolerance has a basic logical, and a cut just appended has age 0 under a limit of at least 1 (**not tested**, unreachable but for rounding); (26) *the ages do not follow the rows* only changes which cuts leave after the first removal, never an answer, and the exact counts of the gate's instances did not notice (**not tested**); (10), (12), (14) and (15) are those of 22.3.1, unchanged (**not tested**); (28) is equivalent (every cut is a <= row).
+
+### 22.6 Profile of the search at 24 x 16, and restoring from the state the last node left (measured; written as the change was tried) **[measured unless marked]**
+
+**Question.** With the rounds cheap (22.3), where do the search's time and nodes go on tight 24 x 16 (the `evgen` model, seed 1, **optimum 172.93; HiGHS proves it in 18,399 nodes and 13.5 s** with `mip_rel_gap` 1e-9, 6,606 nodes and 9.1 s at its default 1e-4; this is not the model of the benchmark page, whose optimum is 191.45)? `--experiment 128`, 20,000 nodes, the build of 22.5.
+
+| fact | measured |
+|---|---|
+| the optimum is found at | node 125 (173.20) and by a sub-MIP (172.93); the root bound after the cuts is 172.915: **the gap to close is 0.015, i.e. the work is proving, not finding** |
+| nodes reached by plunging / by restoring | 13,783 / 6,215 (31 percent restored; 3 percent in 22.1.1, before the cuts) |
+| dual iterations in plunged nodes / in restored nodes | 70,505 (5.1 per node) / **610,268 (98.2 per restore)**: 87 percent of all iterations |
+| bounds re-applied by a restore | 496,258, 80 per restore |
+| infeasible nodes / nodes cut after their LP | 0 / 6,213 |
+| whole run | 38.3 s for 699,218 iterations (the cut rounds are about 7 s of it) |
+
+**Reading.** A plunge ends when its node is pruned, and the next node is the best open one: a far node, which `restore` reaches by copying the *root's* optimal state, re-applying the bounds of the whole path (80 on average) and refactorising, after which the dual simplex needs 98 iterations to repair the root basis for all those bounds. That is the cost, not the copy.
+
+**The change (a choice, measured below).** The state the previous node left is optimal for *its* bounds and, because a bound change on a nonbasic column keeps the side it sits on, **dual feasible for any other bounds**. So a restore can start from it: set the node's bounds on every column (the loop that already runs), `refresh` by the factorisation in hand (a recomputation, not a refactorisation) and run the dual simplex. Nothing is copied and no state is kept. The old restore stays behind experiment bit 2097152.
+
+**Measured, before the change is made the default (bit 2097152 off means from the root, on means from the previous node; same build otherwise):**
+
+| 24 x 16, 20,000 nodes | from the root | from the previous node |
+|---|---|---|
+| iterations per restore | 98.2 | **8.0** |
+| restored / plunged nodes | 6,215 / 13,783 | 8,796 / 11,202 |
+| iterations in all | 699,218 | **267,676** |
+| seconds | 38.3 | **21.6** |
+| incumbent, bound | 172.930, 172.915 | 172.930, 172.915 |
+| **to the proof** (400,000-node limit) | not measured (does not finish in 90 s on the benchmark's model) | **optimal, 46,299 nodes, 34.0 s** (8.7 iterations per restore) |
+
+**Claims.** (1) The answer never changes: the gates against HiGHS, CP-SAT, SCIP and enumeration (`check_mip`, `check_mip_engines`, `check_cuts`, `check_mir`, `check_highs`) pass. (2) The paths of the search change (the LPs stop at other vertices of the same optimal face), so every table of exact counts is re-measured on purpose. (3) The change helps on the others too: the tight models of 22.3.1 and the ample EV models do not get slower (the ample ones solve at the root). **If a gate fails or a model gets slower the change is not made the default and this paragraph says so.**
