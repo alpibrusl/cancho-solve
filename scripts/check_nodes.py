@@ -10,7 +10,7 @@ from hs import run_solve
 SOLVE = os.environ.get("SOLVE", "build/solve")
 CFGS = {"default": [], "depth+fractional": ["--node-select", "depth", "--branching", "fractional"], "best+fractional": ["--branching", "fractional"], "depth+pseudo": ["--node-select", "depth"],
         "whole-cut off": ["--experiment", "1"], "no rounding": ["--experiment", "2"], "far child": ["--experiment", "4"],
-        "19.8 search": ["--experiment", "96"]}   # 96 = 32 (no pausing, no RINS) + 64 (no MIR cuts): the search before docs/design.md 21.2, whose counts are kept so that its effort-only mutants stay killed
+        "19.8 search": ["--experiment", "96"]}   # 96 = 32 (no pausing, no RINS) + 64 (no MIR cuts): the search before docs/design.md 22.1, whose counts are kept so that its effort-only mutants stay killed
 INSTS = {"mkp 50x10": lpgen.mkp(7, 50, 10), "general int 20x20": lpgen.random_mip(7, 20, 20, 0.4, 1.0), "bin packing 8/4": lpgen.bin_packing_lite(7, 8, 4),
          "knapsack 100": lpgen.knapsack(7, 100), "set cover 120x200": lpgen.set_cover(7, 120, 200, 0.05), "mixed 30x40": lpgen.random_mip(7, 30, 40, 0.3, 0.5)}
 EXACT_DENSE = {

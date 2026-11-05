@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Prototype for docs/design.md 21.2: how far do mixed-integer-rounding cuts with path aggregation (Marchand and Wolsey) lift the root bound of a model, in dense numpy over scipy's HiGHS LP?
-It is the reference the cancho code (lib/mip/cmir.cho) is written against, and the source of the numbers 21.2 quotes for the prototype. Not a gate and not used by one.
+"""Prototype for docs/design.md 22.1: how far do mixed-integer-rounding cuts with path aggregation (Marchand and Wolsey) lift the root bound of a model, in dense numpy over scipy's HiGHS LP?
+It is the reference the cancho code (lib/mip/cmir.cho) is written against, and the source of the numbers 22.1 quotes for the prototype. Not a gate and not used by one.
 
 For each model: the LP bound, the bound after the implied cuts of 19.8 (rebuilt here), then rounds of: solve the LP, separate, add the best PER cuts; the bound every 10 rounds; the optimum of HiGHS for reference.
 A model is a .sol file, or `ev:V:T` for the tight EV-depot model of scripts/evgen.py (seed 7).

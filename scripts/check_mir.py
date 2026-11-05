@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Gate 8 (docs/design.md 21.2): the MIR cuts with path aggregation and the RINS driver never change an answer, and they do what is claimed. Written before lib/mip/cmir.cho; it must fail on
+"""Gate 8 (docs/design.md 22.1): the MIR cuts with path aggregation and the RINS driver never change an answer, and they do what is claimed. Written before lib/mip/cmir.cho; it must fail on
 a build without them (the effect table, the node counts and G3's `prof` reading do) and on a build whose cuts are wrong (G1).
 G1 validity (with the defaults and with the cuts built before the search, `--experiment 256`; the number of cuts found and kept by the second is held exactly): generated tight and ample EV models, facility-location models, 60 random big-M models (`mixed`), 24 random mixed-integer models with general integers, equalities and negative
    coefficients (lpgen.random_mip) and knapsacks and set covers (lpgen): status and optimal value with the defaults equal HiGHS's to 1e-6 relative, and also those without MIR cuts and without
    the driver (`--experiment 96`) when that search finishes; the incumbent passes `solve verify`.
-G2 effect: the root bound (`--node-limit 1`; with the cuts `--node-limit 301`, since they are added after the first 300 nodes, 21.2) of the tight EV models 6x8, 8x10, 10x12 and 12x12 rises to the optimum, exactly (table EFFECT below, re-measured on purpose), the bound without MIR
+G2 effect: the root bound (`--node-limit 1`; with the cuts `--node-limit 301`, since they are added after the first 300 nodes, 22.1) of the tight EV models 6x8, 8x10, 10x12 and 12x12 rises to the optimum, exactly (table EFFECT below, re-measured on purpose), the bound without MIR
    cuts is the one of 19.8, and 6x8 and 8x10 are proved in fewer than 2,000 nodes (they take more than 10,000 and 300,000 without).
 G3 pausing: on instances whose search takes more than 900 nodes the optimum with the driver and without it (`--experiment 32`) agree and verify (bit 128 adds the profile `stats.prof` to the report); on an instance that takes fewer than 300 nodes
    the node count is the same either way; the number of sub-MIPs run (`stats.prof[62]`) is positive on the first kind (run with the MIR cuts off, `--experiment 64`, because with them 6x8 is solved at the root) and zero on the second.

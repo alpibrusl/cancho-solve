@@ -356,7 +356,7 @@ fn fmin_i(a: int, b: int) -> [] int {
     return b;
 }
 
-// The profile of docs/design.md 21.2.1 (printed as `stats.prof` under experiment bit 128; prof[k] is stats[10 + k]): stats[18] incumbent updates, [19] the node of the last, [20] its depth,
+// The profile of docs/design.md 22.1.1 (printed as `stats.prof` under experiment bit 128; prof[k] is stats[10 + k]): stats[18] incumbent updates, [19] the node of the last, [20] its depth,
 // [21 + 2i] and [22 + 2i] the node and 1000 times the value of the first five, [31] how many came from an integral LP.
 fn prof_inc[&d](stats: &!d [int], nodes: int, depth: int, inc: float, kind: int) -> [] int {
     let k = stats[18];
@@ -438,7 +438,7 @@ fn rc_fix[&a, &b, &c, &d](eng: int, rw: &a [float], rwi: &b [int], mf: &!c [floa
 }
 
 // Everything the search keeps, laid out in two slices (`mf`, `mi`) and addressed by these offsets. kcap is the capacity of the node arena.
-// ctl (the driver's control, docs/design.md 21.2): 0 resume a paused search, 1 pause when this many nodes have been solved (-1 never), 2 start with the incumbent in x/fres, 3 the bounds
+// ctl (the driver's control, docs/design.md 22.1): 0 resume a paused search, 1 pause when this many nodes have been solved (-1 never), 2 start with the incumbent in x/fres, 3 the bounds
 // of the columns are in sd[0..n) and sd[n..2n) (a sub-MIP), 4 keep an LP point every this many nodes in sd[2n + slot n ..] (0 never), 5 how many slots (a ring), 6 stop after the root LP and return its point in x and its value in fres[1]. On a pause the search is
 // in the arrays and the incumbent in x/fres; a paused search is resumed with the same arrays.
 fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int, eng: int, fi: &!s1 [int], ff: &!s2 [float], sd: &!s3 [float], ctl: &!s4 [int]) -> [] int {
@@ -614,7 +614,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
         }
     }
     if ctl[6] == 1 && running && st == sx.s_optimal() {
-        // root only (the cut rounds of docs/design.md 21.2): hand back the LP point and its value
+        // root only (the cut rounds of docs/design.md 22.1): hand back the LP point and its value
         var jx = 0;
         while jx < n {
             x[jx] = w[o_v + jx];
@@ -905,7 +905,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
 // 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best, 2 hybrid: depth until the first incumbent, then best bound), 3 branching (0 fractional,
 // 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child, 8 no implied cuts, 16 no reduced-cost fixing, 32 no pausing and no RINS, 64 no MIR cuts, 128 print the profile, 256 the MIR rounds before the search instead of after its first 300 nodes), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
 
-// One run of `core` to its end on its own arrays, with a node limit and the control of a sub-MIP (docs/design.md 21.2): the incumbent in x/fres, the bounds in sd.
+// One run of `core` to its end on its own arrays, with a node limit and the control of a sub-MIP (docs/design.md 22.1): the incumbent in x/fres, the bounds in sd.
 fn sub_in[&h, &a, &b, &c, &d, &e, &f, &g, &k](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], sd: &!g [float], ctl: &!k [int]) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
@@ -953,7 +953,7 @@ fn improves(sign: float, a: float, than: float) -> [] bool {
     return sign * a < sign * than - 1e-9 * (1.0 + mag(than));
 }
 
-// The main search with RINS between its slices (docs/design.md 21.2). `core` is run to the first pause (after `pause` nodes); then, with an incumbent, for each of the LP points it kept
+// The main search with RINS between its slices (docs/design.md 22.1). `core` is run to the first pause (after `pause` nodes); then, with an incumbent, for each of the LP points it kept
 // (a ring of `gcount`, one every `gstep` nodes) a sub-MIP with the integer columns on which the point and the incumbent agree fixed (RINS) runs for a few nodes; an improved incumbent is
 // handed back to the paused search, which resumes with it (its open nodes are cut by the new value). The pause interval triples each time. Sub-MIPs are separate runs of `core` (no recursion).
 // stats[72] counts sub-MIPs, [73] improvements, [74] their nodes, [75] their iterations.
@@ -1153,7 +1153,7 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
     return code;
 }
 
-// The MIR cut rounds of docs/design.md 21.2 on the copy (ints2, fl2) of the model, which already holds its implied cuts: solve the root LP (a run of `core` that stops after it), separate
+// The MIR cut rounds of docs/design.md 22.1 on the copy (ints2, fl2) of the model, which already holds its implied cuts: solve the root LP (a run of `core` that stops after it), separate
 // from its point (lib/mip/cmir.cho), append the best cuts as rows, and again; stop when no cut is violated, after 200 rounds, after 60 rounds in a row in which the bound did not move
 // by 1e-9 relative, or when the model with the new rows would no longer fit the engine (the rounds use the sparse engine whatever the search uses: the dense one costs m (n + m) per pivot); then drop the cut rows that are not tight at the final point. stats[76] rounds, [77] cuts found,
 // [78] cuts kept. Returns the number of rows kept.
@@ -1318,7 +1318,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                 }
                 // The MIR cuts are only worth their rounds when the search does not settle the model by itself: the first 300 nodes run without them (a model that one of
                 // the roundings and the implied cuts close, like the ample EV models, never pays for them), and then, if the search is not over, the rounds run, and the search
-                // starts again from the root on the model with the cuts, keeping the incumbent (docs/design.md 21.2).
+                // starts again from the root on the model with the cuts, keeping the incumbent (docs/design.md 22.1).
                 let eager = opts[4] / 256 % 2 == 1;
                 if mir && eager {
                     // experiment bit 256: the rounds before the search, whatever it would have done (the gates use it, so that small models, which the search settles in fewer

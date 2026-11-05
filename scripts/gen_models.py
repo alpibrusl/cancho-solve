@@ -1,4 +1,4 @@
-"""Model generators and the HiGHS oracle shared by scripts/check_cuts.py and scripts/check_mir.py (docs/design.md 19.8 and 21.2): `facility`, `mixed`, `highs`, `solve`, `sh`."""
+"""Model generators and the HiGHS oracle shared by scripts/check_cuts.py and scripts/check_mir.py (docs/design.md 19.8 and 22.1): `facility`, `mixed`, `highs`, `solve`, `sh`."""
 import json, os, random, subprocess
 import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds

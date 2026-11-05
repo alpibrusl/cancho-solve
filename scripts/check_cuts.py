@@ -2,7 +2,7 @@
 """Gate (docs/design.md 19.8): the implied cuts through variable upper bounds never change an answer, and they do what is claimed.
 1. validity: on generated EV-depot instances (ample, tight and impossible chargers; several seeds), facility-location instances (the other big-M shape, with equal and with varied bounds) and 60
    random big-M models with every row shape the generator reads or refuses (`mixed`), the status and
-   the optimal value with the cuts equal those without (`--experiment 104`: 8 no implied cuts, 32 no pausing and RINS, 64 no MIR cuts, 21.2) and HiGHS's (scipy milp on `solve expand`), to 1e-6 relative; the incumbent `solve verify` accepts.
+   the optimal value with the cuts equal those without (`--experiment 104`: 8 no implied cuts, 32 no pausing and RINS, 64 no MIR cuts, 22.1) and HiGHS's (scipy milp on `solve expand`), to 1e-6 relative; the incumbent `solve verify` accepts.
 2. effect: docs/examples/ev_depot_3.sol adds 6 cuts and takes exactly 3,724 nodes (47,105 without), and its root bound rises from 26.58 to at least 27.2; a knapsack, which has no variable
    upper bound, gets 0 cuts; `--experiment 8` gives 0 cuts; and the number of cuts added on the generated instances and the sum of their root bounds are held exactly (a weaker or a stronger
    cut moves them).
@@ -32,7 +32,7 @@ def validity(name, text):
         return with_cuts
     without, _ = solve(text, ["--experiment", "104"])   # 104 = 8 (no implied cuts) + 32 (no pausing, no RINS) + 64 (no MIR cuts)
     hs, hv = highs(text)
-    limited = without["status"] in ("feasible", "unknown")   # the plain search ran into its node limit (the cuts of 21.2 are what finish some of these): only HiGHS can judge
+    limited = without["status"] in ("feasible", "unknown")   # the plain search ran into its node limit (the cuts of 22.1 are what finish some of these): only HiGHS can judge
     ok = with_cuts["status"] == hs and (limited or without["status"] == hs)
     if ok and hs == "optimal":
         ok = agree(with_cuts["objective"], hv) and (limited or agree(without["objective"], hv))

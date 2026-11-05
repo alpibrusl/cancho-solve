@@ -2,7 +2,7 @@ edition 7;
 
 module solve.cmir;
 
-// Mixed-integer-rounding cuts with path aggregation (Marchand and Wolsey), separated from an LP point (docs/design.md 21.2; the reference is scripts/proto_cmir.py).
+// Mixed-integer-rounding cuts with path aggregation (Marchand and Wolsey), separated from an LP point (docs/design.md 22.1; the reference is scripts/proto_cmir.py).
 //
 // A row `a x <= b` of the model (a `>=` row negated; an equality row used either way) that is tight at the point is taken as the start of an aggregation. Each continuous column is replaced by
 // its nearest bound: its lower bound (s = x - lo), its upper bound (s = hi - x) or its variable upper bound x <= u y (s = u y - x, y an integer column), and each integer column by itself or

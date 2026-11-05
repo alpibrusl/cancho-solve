@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Mutants of the MIR cuts (lib/mip/cmir.cho) and of the rounds and the RINS driver around them (lib/mip/mip.cho), docs/design.md 21.2, judged by scripts/check_mir.py. Each mutant is built in a
-scratch copy of the repository and is killed when the gate fails; one that builds and passes is a survivor and must be explained in design.md (21.3). Needs CANCHO=the compiler and scipy.
+"""Mutants of the MIR cuts (lib/mip/cmir.cho) and of the rounds and the RINS driver around them (lib/mip/mip.cho), docs/design.md 22.1, judged by scripts/check_mir.py. Each mutant is built in a
+scratch copy of the repository and is killed when the gate fails; one that builds and passes is a survivor and must be explained in design.md (22.2). Needs CANCHO=the compiler and scipy.
 Usage: CANCHO=... python3 scripts/mutants_cmir.py   (ONLY=3,4 to run some; JOBS=4 runs that many at once)"""
 import concurrent.futures, os, shutil, subprocess, sys, tempfile
 

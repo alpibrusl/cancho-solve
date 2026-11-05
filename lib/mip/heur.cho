@@ -2,7 +2,7 @@ edition 7;
 
 module solve.heur;
 
-// Helpers of the improvement heuristics that run between slices of the search (docs/design.md 21.2). Pure functions over the model and slices; no search state.
+// Helpers of the improvement heuristics that run between slices of the search (docs/design.md 22.1). Pure functions over the model and slices; no search state.
 
 import solve.layout as l;
 
