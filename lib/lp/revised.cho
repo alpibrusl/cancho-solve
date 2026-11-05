@@ -1,0 +1,819 @@
+edition 7;
+
+module solve.revised;
+
+// The sparse revised dual simplex (docs/design.md sections 18.3 and 18.3.2). The same problem, bounds, tolerances, long step and pricing as simplex.cho, with the tableau replaced
+// by the factorised basis of sparse.cho: `z = (x, y)` with `A x - y = 0`, the matrix `M = [A | -I]`, the basis `B` of m columns of `M`, and `rho = e_r B^-1`.
+//
+// State: `wi` (ints) and `wf` (floats) hold the model and the iteration (the layout is written in the header of `wi` by `setup`), `fi`/`ff` are the factorisation of sparse.cho.
+// Nothing here writes to the checker's slices.
+
+import solve.layout as l;
+import solve.sparse as sp;
+
+pub fn s_optimal() -> [] int {
+    return 0;
+}
+
+pub fn s_infeasible() -> [] int {
+    return 1;
+}
+
+pub fn s_limit() -> [] int {
+    return 2;
+}
+
+pub fn s_too_large() -> [] int {
+    return 3;
+}
+
+pub fn s_numerical() -> [] int {
+    return 4;
+}
+
+// internal: a factorisation filled its pool; the caller restarts with a larger one
+fn s_pool() -> [] int {
+    return 5;
+}
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// The refactorisation interval (design.md 18.4).
+fn interval() -> [] int {
+    return 64;
+}
+
+// Sizes of the two work slices: ints, floats.
+pub fn wi_len(m: int, n: int, nnz: int) -> [] int {
+    return 64 + (n + 1) + nnz + (m + 1) + nnz + m + 3 * (n + m) + 2 * n + (m + 1) + (nnz + m) + 8;
+}
+
+pub fn wf_len(m: int, n: int, nnz: int) -> [] int {
+    return 64 + n + 4 * (n + m) + m + n + 4 * m + (n + m) + 2 * nnz + (nnz + m) + 8;
+}
+
+// Header of `wi`: 0 m, 1 n, 2 big, 3 nnz, 4 cstart, 5 crow, 6 rstart, 7 rcol, 8 basis, 9 pos, 10 at, 11 cand, 12 touch, 13 tmark, 14 bstart, 15 bind,
+// and of the floats: 16 c, 17 d, 18 z, 19 lo, 20 hi, 21 wt, 22 arow, 23 rho, 24 alpha, 25 tau, 26 sv, 27 ratio, 28 cval, 29 rcoef, 30 bval; 31 refactorisations.
+fn layout_offsets[&a](wi: &!a [int], m: int, n: int, nnz: int) -> [] int {
+    let big = n + m;
+    wi[0] = m;
+    wi[1] = n;
+    wi[2] = big;
+    wi[3] = nnz;
+    var o = 64;
+    wi[4] = o;
+    o = o + n + 1;
+    wi[5] = o;
+    o = o + nnz;
+    wi[6] = o;
+    o = o + m + 1;
+    wi[7] = o;
+    o = o + nnz;
+    wi[8] = o;
+    o = o + m;
+    wi[9] = o;
+    o = o + big;
+    wi[10] = o;
+    o = o + big;
+    wi[11] = o;
+    o = o + big;
+    wi[12] = o;
+    o = o + n;
+    wi[13] = o;
+    o = o + n;
+    wi[14] = o;
+    o = o + m + 1;
+    wi[15] = o;
+    var q = 64;
+    wi[16] = q;
+    q = q + n;
+    wi[17] = q;
+    q = q + big;
+    wi[18] = q;
+    q = q + big;
+    wi[19] = q;
+    q = q + big;
+    wi[20] = q;
+    q = q + big;
+    wi[21] = q;
+    q = q + m;
+    wi[22] = q;
+    q = q + n;
+    wi[23] = q;
+    q = q + m;
+    wi[24] = q;
+    q = q + m;
+    wi[25] = q;
+    q = q + m;
+    wi[26] = q;
+    q = q + m;
+    wi[27] = q;
+    q = q + big;
+    wi[28] = q;
+    q = q + nnz;
+    wi[29] = q;
+    q = q + nnz;
+    wi[30] = q;
+    wi[31] = 0;
+    return 0;
+}
+
+// Reads the model (the checker's slices) into the work slices and sets up the slack basis.
+fn setup[&a, &b, &c, &d](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float]) -> [] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    let nnz = ints[l.row_start(m)];
+    layout_offsets(wi, m, n, nnz);
+    let big = n + m;
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_rs = wi[6];
+    let o_rc = wi[7];
+    let o_bs = wi[8];
+    let o_ps = wi[9];
+    let o_at = wi[10];
+    let o_c = wi[16];
+    let o_d = wi[17];
+    let o_z = wi[18];
+    let o_lo = wi[19];
+    let o_hi = wi[20];
+    let o_wt = wi[21];
+    let o_cv = wi[28];
+    let o_rv = wi[29];
+    // bounds
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                wf[o_lo + ints[l.sym_base(k)] + off] = fl[l.sym_lo(k)];
+                wf[o_hi + ints[l.sym_base(k)] + off] = fl[l.sym_hi(k)];
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    var sign = 1.0;
+    if ints[l.h_sense()] == 2 {
+        sign = -1.0;
+    }
+    // the rows, and the count of each column
+    var j = 0;
+    while j <= n {
+        wi[o_cs + j] = 0;
+        j = j + 1;
+    }
+    var i = 0;
+    while i < m {
+        let rhs = fl[l.row_rhs(i)];
+        let s = ints[l.row_sense(i)];
+        if s == 0 {
+            wf[o_lo + n + i] = -1e300;
+            wf[o_hi + n + i] = rhs;
+        } else if s == 1 {
+            wf[o_lo + n + i] = rhs;
+            wf[o_hi + n + i] = 1e300;
+        } else {
+            wf[o_lo + n + i] = rhs;
+            wf[o_hi + n + i] = rhs;
+        }
+        wi[o_rs + i] = ints[l.row_start(i)];
+        var t = ints[l.row_start(i)];
+        while t < ints[l.row_start(i + 1)] {
+            wi[o_rc + t] = ints[l.term_col(t)];
+            wf[o_rv + t] = fl[l.term_coef(t)];
+            wi[o_cs + ints[l.term_col(t)] + 1] = wi[o_cs + ints[l.term_col(t)] + 1] + 1;
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    wi[o_rs + m] = nnz;
+    j = 0;
+    while j < n {
+        wi[o_cs + j + 1] = wi[o_cs + j + 1] + wi[o_cs + j];
+        wi[wi[13] + j] = 0;
+        j = j + 1;
+    }
+    // the column form: rows in increasing order within a column
+    i = 0;
+    while i < m {
+        var t = wi[o_rs + i];
+        while t < wi[o_rs + i + 1] {
+            let cj = wi[o_rc + t];
+            let at = wi[o_cs + cj] + wi[wi[13] + cj];
+            wi[o_cr + at] = i;
+            wf[o_cv + at] = wf[o_rv + t];
+            wi[wi[13] + cj] = wi[wi[13] + cj] + 1;
+            t = t + 1;
+        }
+        i = i + 1;
+    }
+    j = 0;
+    while j < n {
+        wi[wi[13] + j] = 0;
+        j = j + 1;
+    }
+    // costs of the minimised objective
+    var t = 0;
+    while t < ints[l.h_obj_nnz()] {
+        wf[o_c + ints[l.obj_col(t)]] = sign * fl[l.obj_coef(t)];
+        t = t + 1;
+    }
+    // the slack basis; structural variables at the bound their cost prefers
+    j = 0;
+    while j < n {
+        wi[o_ps + j] = 0 - 1;
+        wf[o_d + j] = wf[o_c + j];
+        if wf[o_c + j] >= 0.0 {
+            wi[o_at + j] = 0;
+            wf[o_z + j] = wf[o_lo + j];
+        } else {
+            wi[o_at + j] = 1;
+            wf[o_z + j] = wf[o_hi + j];
+        }
+        j = j + 1;
+    }
+    i = 0;
+    while i < m {
+        wi[o_bs + i] = n + i;
+        wi[o_ps + n + i] = i;
+        wf[o_wt + i] = 1.0;
+        var act = 0.0;
+        var u = wi[o_rs + i];
+        while u < wi[o_rs + i + 1] {
+            act = act + wf[o_rv + u] * wf[o_z + wi[o_rc + u]];
+            u = u + 1;
+        }
+        wf[o_z + n + i] = act;
+        i = i + 1;
+    }
+    return big;
+}
+
+// The basis in column form, for the factorisation: the column of a structural variable is its column of A, that of the logical of row i is -e_i.
+fn build_basis[&a, &b](wi: &!a [int], wf: &!b [float]) -> [] int {
+    let m = wi[0];
+    let n = wi[1];
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_bs = wi[8];
+    let o_bst = wi[14];
+    let o_bin = wi[15];
+    let o_cv = wi[28];
+    let o_bv = wi[30];
+    var at = 0;
+    var p = 0;
+    while p < m {
+        wi[o_bst + p] = at;
+        let v = wi[o_bs + p];
+        if v < n {
+            var t = wi[o_cs + v];
+            while t < wi[o_cs + v + 1] {
+                wi[o_bin + at] = wi[o_cr + t];
+                wf[o_bv + at] = wf[o_cv + t];
+                at = at + 1;
+                t = t + 1;
+            }
+        } else {
+            wi[o_bin + at] = v - n;
+            wf[o_bv + at] = -1.0;
+            at = at + 1;
+        }
+        p = p + 1;
+    }
+    wi[o_bst + m] = at;
+    return at;
+}
+
+// Recomputes the duals and the basic values from the factorisation (design.md 18.3.2). 0, or 4 when a dual infeasibility cannot be repaired.
+fn recompute[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &c [int], ff: &!d [float]) -> [] int {
+    let m = wi[0];
+    let n = wi[1];
+    let big = n + m;
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_bs = wi[8];
+    let o_ps = wi[9];
+    let o_at = wi[10];
+    let o_c = wi[16];
+    let o_dd = wi[17];
+    let o_z = wi[18];
+    let o_lo = wi[19];
+    let o_hi = wi[20];
+    let o_rho = wi[23];
+    let o_sv = wi[26];
+    let o_cv = wi[28];
+    // duals: pi = c_B B^-1 (by row), in `rho`
+    var p = 0;
+    while p < m {
+        var cb = 0.0;
+        if wi[o_bs + p] < n {
+            cb = wf[o_c + wi[o_bs + p]];
+        }
+        wf[o_rho + p] = cb;
+        p = p + 1;
+    }
+    sp.btran(fi, ff, wf[o_rho..o_rho + m]);
+    var j = 0;
+    var repaired = false;
+    while j < big {
+        if wi[o_ps + j] >= 0 {
+            wf[o_dd + j] = 0.0;
+        } else {
+            var dj = 0.0;
+            if j < n {
+                dj = wf[o_c + j];
+                var t = wi[o_cs + j];
+                while t < wi[o_cs + j + 1] {
+                    dj = dj - wf[o_rho + wi[o_cr + t]] * wf[o_cv + t];
+                    t = t + 1;
+                }
+            } else {
+                dj = wf[o_rho + j - n];
+            }
+            if wf[o_hi + j] - wf[o_lo + j] > 1e-12 {
+                let tol = 1e-9 * (1.0 + mag(dj));
+                if wi[o_at + j] == 0 && dj < 0.0 {
+                    if dj >= -tol {
+                        dj = 0.0;
+                    } else if wf[o_hi + j] < 1e299 {
+                        wi[o_at + j] = 1;
+                        wf[o_z + j] = wf[o_hi + j];
+                        repaired = true;
+                    } else {
+                        return s_numerical();
+                    }
+                } else if wi[o_at + j] == 1 && dj > 0.0 {
+                    if dj <= tol {
+                        dj = 0.0;
+                    } else if wf[o_lo + j] > -1e299 {
+                        wi[o_at + j] = 0;
+                        wf[o_z + j] = wf[o_lo + j];
+                        repaired = true;
+                    } else {
+                        return s_numerical();
+                    }
+                }
+            }
+            wf[o_dd + j] = dj;
+        }
+        j = j + 1;
+    }
+    // basic values: z_B = -B^-1 (sum over nonbasic j of M_j z_j)
+    j = 0;
+    while j < m {
+        wf[o_sv + j] = 0.0;
+        j = j + 1;
+    }
+    j = 0;
+    while j < big {
+        if wi[o_ps + j] < 0 && wf[o_z + j] != 0.0 {
+            if j < n {
+                var t = wi[o_cs + j];
+                while t < wi[o_cs + j + 1] {
+                    wf[o_sv + wi[o_cr + t]] = wf[o_sv + wi[o_cr + t]] + wf[o_cv + t] * wf[o_z + j];
+                    t = t + 1;
+                }
+            } else {
+                wf[o_sv + j - n] = wf[o_sv + j - n] - wf[o_z + j];
+            }
+        }
+        j = j + 1;
+    }
+    sp.ftran(fi, ff, wf[o_sv..o_sv + m]);
+    p = 0;
+    while p < m {
+        wf[o_z + wi[o_bs + p]] = -wf[o_sv + p];
+        wf[o_sv + p] = 0.0;
+        p = p + 1;
+    }
+    return 0;
+}
+
+// Factorises the current basis and recomputes duals and basic values. 0, 4 (numerical), 5 (pool).
+fn refactor[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float]) -> [] int {
+    let m = wi[0];
+    let nb = build_basis(wi, wf);
+    let code = sp.factor(fi, ff, wi[wi[14]..wi[14] + m + 1], wi[wi[15]..wi[15] + nb], wf[wi[30]..wi[30] + nb]);
+    wi[31] = wi[31] + 1;
+    if code == sp.r_pool() {
+        return s_pool();
+    }
+    if code != 0 {
+        return s_numerical();
+    }
+    return recompute(wi, wf, fi, ff);
+}
+
+// The loop. Returns a result code; `stats[0]` is the iteration count.
+fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float], stats: &!e [int], limit: int) -> [] int {
+    let m = wi[0];
+    let n = wi[1];
+    let big = n + m;
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_rs = wi[6];
+    let o_rc = wi[7];
+    let o_bs = wi[8];
+    let o_ps = wi[9];
+    let o_at = wi[10];
+    let o_cd = wi[11];
+    let o_tc = wi[12];
+    let o_tm = wi[13];
+    let o_c = wi[16];
+    let o_dd = wi[17];
+    let o_z = wi[18];
+    let o_lo = wi[19];
+    let o_hi = wi[20];
+    let o_wt = wi[21];
+    let o_ar = wi[22];
+    let o_rho = wi[23];
+    let o_al = wi[24];
+    let o_tau = wi[25];
+    let o_sv = wi[26];
+    let o_ra = wi[27];
+    let o_cv = wi[28];
+    let o_rv = wi[29];
+    var iter = 0;
+    while true {
+        // the basic variable of largest steepest-edge price
+        var r = 0 - 1;
+        var worst = 0.0;
+        var score = 0.0;
+        var up = false;
+        var i = 0;
+        while i < m {
+            let bv = wi[o_bs + i];
+            let v = wf[o_z + bv];
+            let lb = wf[o_lo + bv];
+            let ub = wf[o_hi + bv];
+            var viol = 0.0;
+            var below = false;
+            if v < lb - 1e-9 * (1.0 + mag(lb)) {
+                viol = lb - v;
+                below = true;
+            } else if v > ub + 1e-9 * (1.0 + mag(ub)) {
+                viol = v - ub;
+            }
+            if viol > 0.0 {
+                let sc = viol * viol / wf[o_wt + i];
+                if sc > score {
+                    score = sc;
+                    worst = viol;
+                    r = i;
+                    up = below;
+                }
+            }
+            i = i + 1;
+        }
+        stats[0] = iter;
+        if r < 0 {
+            // optimal only straight after a refactorisation
+            if fi[4] > 0 {
+                let code = refactor(wi, wf, fi, ff);
+                if code != 0 {
+                    return code;
+                }
+            } else {
+                return s_optimal();
+            }
+        } else if iter >= limit {
+            return s_limit();
+        } else {
+            // rho = e_r B^-1, and its exact squared length as the weight of the row
+            i = 0;
+            while i < m {
+                wf[o_rho + i] = 0.0;
+                i = i + 1;
+            }
+            wf[o_rho + r] = 1.0;
+            sp.btran(fi, ff, wf[o_rho..o_rho + m]);
+            var wr = 0.0;
+            i = 0;
+            while i < m {
+                wr = wr + wf[o_rho + i] * wf[o_rho + i];
+                i = i + 1;
+            }
+            wf[o_wt + r] = wr;
+            // the pivot row: structural columns through the rows of A for the nonzeros of rho
+            var nt = 0;
+            i = 0;
+            while i < m {
+                let ri = wf[o_rho + i];
+                if ri != 0.0 {
+                    var t = wi[o_rs + i];
+                    while t < wi[o_rs + i + 1] {
+                        let cj = wi[o_rc + t];
+                        if wi[o_tm + cj] == 0 {
+                            wi[o_tm + cj] = 1;
+                            wi[o_tc + nt] = cj;
+                            nt = nt + 1;
+                            wf[o_ar + cj] = 0.0;
+                        }
+                        wf[o_ar + cj] = wf[o_ar + cj] + ri * wf[o_rv + t];
+                        t = t + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            // the candidates, with their dual ratios
+            var nc = 0;
+            var s = 0;
+            while s < nt + m {
+                var j = 0;
+                var av = 0.0;
+                if s < nt {
+                    j = wi[o_tc + s];
+                    av = wf[o_ar + j];
+                } else {
+                    j = n + s - nt;
+                    av = -wf[o_rho + s - nt];
+                }
+                if wi[o_ps + j] < 0 && wf[o_hi + j] - wf[o_lo + j] > 1e-12 && mag(av) > 1e-9 {
+                    let atb = wi[o_at + j];
+                    var ok = false;
+                    if up {
+                        ok = atb == 0 && av < 0.0 || atb == 1 && av > 0.0;
+                    } else {
+                        ok = atb == 0 && av > 0.0 || atb == 1 && av < 0.0;
+                    }
+                    if ok {
+                        wi[o_cd + nc] = j;
+                        wf[o_ra + nc] = mag(wf[o_dd + j]) / mag(av);
+                        nc = nc + 1;
+                    }
+                }
+                s = s + 1;
+            }
+            // the long step: candidates in increasing ratio (ties: larger |alpha|, then smaller index); passed ones are flipped, their effect on the basic values is one FTRAN
+            var q = 0 - 1;
+            var delta = worst;
+            var left = nc;
+            var flips = 0;
+            while q < 0 && left > 0 {
+                var bi = 0;
+                var k2 = 1;
+                while k2 < left {
+                    let rk = wf[o_ra + k2];
+                    let rbest = wf[o_ra + bi];
+                    let jk = wi[o_cd + k2];
+                    let jb = wi[o_cd + bi];
+                    var ak = 0.0;
+                    var ab = 0.0;
+                    if jk < n {
+                        ak = mag(wf[o_ar + jk]);
+                    } else {
+                        ak = mag(wf[o_rho + jk - n]);
+                    }
+                    if jb < n {
+                        ab = mag(wf[o_ar + jb]);
+                    } else {
+                        ab = mag(wf[o_rho + jb - n]);
+                    }
+                    if rk < rbest - 1e-12 || rk <= rbest + 1e-12 && (ak > ab || ak == ab && jk < jb) {
+                        bi = k2;
+                    }
+                    k2 = k2 + 1;
+                }
+                let cj = wi[o_cd + bi];
+                wi[o_cd + bi] = wi[o_cd + left - 1];
+                wf[o_ra + bi] = wf[o_ra + left - 1];
+                left = left - 1;
+                var acj = 0.0;
+                if cj < n {
+                    acj = mag(wf[o_ar + cj]);
+                } else {
+                    acj = mag(wf[o_rho + cj - n]);
+                }
+                let slope = delta - acj * (wf[o_hi + cj] - wf[o_lo + cj]);
+                if slope <= 1e-9 * (1.0 + worst) {
+                    q = cj;
+                } else {
+                    delta = slope;
+                    var dx = wf[o_hi + cj] - wf[o_lo + cj];
+                    var nbound = wf[o_hi + cj];
+                    var now = 1;
+                    if wi[o_at + cj] == 1 {
+                        dx = -dx;
+                        nbound = wf[o_lo + cj];
+                        now = 0;
+                    }
+                    if cj < n {
+                        var t = wi[o_cs + cj];
+                        while t < wi[o_cs + cj + 1] {
+                            wf[o_sv + wi[o_cr + t]] = wf[o_sv + wi[o_cr + t]] + wf[o_cv + t] * dx;
+                            t = t + 1;
+                        }
+                    } else {
+                        wf[o_sv + cj - n] = wf[o_sv + cj - n] - dx;
+                    }
+                    flips = flips + 1;
+                    wf[o_z + cj] = nbound;
+                    wi[o_at + cj] = now;
+                }
+            }
+            // the entering column's entry in the pivot row, from the row computation
+            var arq = 0.0;
+            if q >= 0 {
+                if q < n {
+                    arq = wf[o_ar + q];
+                } else {
+                    arq = -wf[o_rho + q - n];
+                }
+            }
+            var restart = false;
+            var result = 0 - 1;
+            if q < 0 {
+                result = s_infeasible();
+            } else {
+                if flips > 0 {
+                    sp.ftran(fi, ff, wf[o_sv..o_sv + m]);
+                    i = 0;
+                    while i < m {
+                        wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_sv + i];
+                        wf[o_sv + i] = 0.0;
+                        i = i + 1;
+                    }
+                }
+                // alpha = B^-1 M_q
+                i = 0;
+                while i < m {
+                    wf[o_al + i] = 0.0;
+                    i = i + 1;
+                }
+                if q < n {
+                    var t = wi[o_cs + q];
+                    while t < wi[o_cs + q + 1] {
+                        wf[o_al + wi[o_cr + t]] = wf[o_cv + t];
+                        t = t + 1;
+                    }
+                } else {
+                    wf[o_al + q - n] = -1.0;
+                }
+                sp.ftran(fi, ff, wf[o_al..o_al + m]);
+                let piv = wf[o_al + r];
+                if fi[4] > 0 && (mag(piv - arq) > 1e-7 * (1.0 + mag(arq)) || mag(piv) < 1e-9) {
+                    restart = true;
+                }
+                if !restart {
+                    let leaving = wi[o_bs + r];
+                    var target = wf[o_hi + leaving];
+                    if up {
+                        target = wf[o_lo + leaving];
+                    }
+                    let dq = -(target - wf[o_z + leaving]) / piv;
+                    i = 0;
+                    while i < m {
+                        if i != r {
+                            wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_al + i] * dq;
+                        }
+                        i = i + 1;
+                    }
+                    wf[o_z + q] = wf[o_z + q] + dq;
+                    wf[o_z + leaving] = target;
+                    // tau = B^-1 rho^T, then the steepest-edge weights
+                    i = 0;
+                    while i < m {
+                        wf[o_tau + i] = wf[o_rho + i];
+                        i = i + 1;
+                    }
+                    sp.ftran(fi, ff, wf[o_tau..o_tau + m]);
+                    i = 0;
+                    while i < m {
+                        if i != r && wf[o_al + i] != 0.0 {
+                            let kap = wf[o_al + i] / piv;
+                            var nw = wf[o_wt + i] - 2.0 * kap * wf[o_tau + i] + kap * kap * wr;
+                            if nw < 1e-4 {
+                                nw = 1e-4;
+                            }
+                            wf[o_wt + i] = nw;
+                        }
+                        i = i + 1;
+                    }
+                    wf[o_wt + r] = wr / (piv * piv);
+                    // reduced costs
+                    let fd = wf[o_dd + q] / piv;
+                    if fd != 0.0 {
+                        s = 0;
+                        while s < nt + m {
+                            if s < nt {
+                                let j = wi[o_tc + s];
+                                if wi[o_ps + j] < 0 {
+                                    wf[o_dd + j] = wf[o_dd + j] - fd * wf[o_ar + j];
+                                }
+                            } else {
+                                let j = n + s - nt;
+                                if wi[o_ps + j] < 0 && wf[o_rho + s - nt] != 0.0 {
+                                    wf[o_dd + j] = wf[o_dd + j] + fd * wf[o_rho + s - nt];
+                                }
+                            }
+                            s = s + 1;
+                        }
+                    }
+                    wf[o_dd + q] = 0.0;
+                    wf[o_dd + leaving] = -fd;
+                    // the basis change
+                    wi[o_ps + leaving] = 0 - 1;
+                    if up {
+                        wi[o_at + leaving] = 0;
+                    } else {
+                        wi[o_at + leaving] = 1;
+                    }
+                    wi[o_bs + r] = q;
+                    wi[o_ps + q] = r;
+                    iter = iter + 1;
+                    let full = sp.push_eta(fi, ff, r, wf[o_al..o_al + m]);
+                    if full != 0 || fi[4] >= interval() {
+                        result = refactor(wi, wf, fi, ff);
+                        if result == 0 {
+                            result = 0 - 1;
+                        }
+                    }
+                }
+            }
+            // clear the pivot row
+            s = 0;
+            while s < nt {
+                wi[o_tm + wi[o_tc + s]] = 0;
+                s = s + 1;
+            }
+            if restart {
+                let code = refactor(wi, wf, fi, ff);
+                if code != 0 {
+                    return code;
+                }
+            }
+            if result >= 0 {
+                return result;
+            }
+        }
+    }
+    return s_limit();
+}
+
+// Solves the LP of the checked model in `ints`/`fl` by the revised dual simplex. Same contract as simplex.solve (x, stats, limit < 0 means the default); `stats[3]` is the
+// number of refactorisations. Codes: 0 optimal, 1 infeasible, 2 limit, 3 too large, 4 numerical.
+pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], limit: int) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    let nnz = ints[l.row_start(m)];
+    let big = n + m;
+    stats[0] = 0;
+    stats[1] = m;
+    stats[2] = n;
+    stats[3] = 0;
+    var cap = limit;
+    if limit < 0 {
+        cap = 100 * big + 1000;
+    }
+    var pool = 3 * (nnz + m) + 4096;
+    var attempts = 0;
+    var status = s_pool();
+    while status == s_pool() {
+        if attempts > 3 || pool > 16000000 {
+            return s_too_large();
+        }
+        let k = interval() + 1;
+        let e = interval() * m + 16;
+        let wi = box_slice(heap, wi_len(m, n, nnz), 0);
+        let wf = box_slice(heap, wf_len(m, n, nnz), 0.0);
+        let fi = box_slice(heap, sp.ints_len(m, pool, k, e), 0);
+        let ff = box_slice(heap, sp.floats_len(m, pool, k, e), 0.0);
+        borrow mut wi as &!wib in {
+            borrow mut wf as &!wfb in {
+                borrow mut fi as &!fib in {
+                    borrow mut ff as &!ffb in {
+                        let wiv = contents(wib);
+                        let wfv = contents(wfb);
+                        let fiv = contents(fib);
+                        let ffv = contents(ffb);
+                        setup(ints, fl, wiv, wfv);
+                        sp.init(fiv, m, pool, k, e);
+                        status = refactor(wiv, wfv, fiv, ffv);
+                        if status == 0 {
+                            status = iterate(wiv, wfv, fiv, ffv, stats, cap);
+                        }
+                        stats[3] = wiv[31];
+                        var j = 0;
+                        while j < n {
+                            x[j] = wfv[wiv[18] + j];
+                            j = j + 1;
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(heap, ff);
+        unbox_slice(heap, fi);
+        unbox_slice(heap, wf);
+        unbox_slice(heap, wi);
+        pool = 4 * pool;
+        attempts = attempts + 1;
+    }
+    return status;
+}

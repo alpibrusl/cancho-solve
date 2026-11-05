@@ -1,9 +1,12 @@
 """Common code for the HiGHS oracle (through scipy.optimize.linprog): read `solve expand` JSON, build the LP, solve it, re-check a solution."""
-import json, subprocess, time
+import json, os, subprocess, time
 import numpy as np
 from scipy.optimize import linprog
 
 def run_solve(solve, verb_args, text):
+    # SOLVE_METHOD=dense|sparse|auto makes every gate judge that method of `solve run` (docs/design.md 18.3.2)
+    if os.environ.get("SOLVE_METHOD") and verb_args[:1] == ["run"]:
+        verb_args = [*verb_args, "--method", os.environ["SOLVE_METHOD"]]
     t = time.perf_counter()
     p = subprocess.run([solve, *verb_args], input=text, capture_output=True, text=True)
     return p, time.perf_counter() - t

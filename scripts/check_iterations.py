@@ -9,11 +9,14 @@ import lpgen
 from hs import run_solve
 
 SOLVE = os.environ.get("SOLVE", "build/solve")
+# (name, model, bound for the dense solver, bound for the sparse one). The sparse solver updates its weights by formula instead of recomputing them (design.md 18.3.2), so its
+# counts differ a little: measured 353, 164, 130, 218 against the dense 323, 164, 130, 214; its bounds are 1.25 times its own counts.
+METHOD = os.environ.get("SOLVE_METHOD", "dense")
 CASES = [
-    ("random dense LP 200x400", lpgen.random_lp(7, 200, 400, 0.5), 400),
-    ("random dense LP 100x200", lpgen.random_lp(7, 100, 200, 0.5), 205),
-    ("multi-knapsack 1000 items, 50 rows", lpgen.mkp(7, 1000, 50), 165),
-    ("assignment 100x100", lpgen.assignment(7, 100), 270),
+    ("random dense LP 200x400", lpgen.random_lp(7, 200, 400, 0.5), 400, 441),
+    ("random dense LP 100x200", lpgen.random_lp(7, 100, 200, 0.5), 205, 205),
+    ("multi-knapsack 1000 items, 50 rows", lpgen.mkp(7, 1000, 50), 165, 165),
+    ("assignment 100x100", lpgen.assignment(7, 100), 270, 273),
 ]
 # exact counts: the rule is deterministic, and a change of the weight of one row moves these by a few iterations (found by the mutant "the pivot row's weight is not
 # taken from the row": 65 and 61 instead of 63 and 59). A deliberate change of the pivoting rule changes these numbers on purpose and they are then re-measured.
@@ -30,7 +33,8 @@ for name, text, want in EXACT:
         print(f"FAIL {name}: {it} iterations, exactly {want} expected, status {p.returncode}")
     else:
         print(f"ok   {name}: {it} iterations (exact)")
-for name, text, bound in CASES:
+for name, text, bound_dense, bound_sparse in CASES:
+    bound = bound_sparse if METHOD == "sparse" else bound_dense
     p, _ = run_solve(SOLVE, ["run", "--relax"], text)
     r = json.loads(p.stdout)
     it = r["stats"]["iterations"]
