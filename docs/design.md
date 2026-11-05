@@ -315,3 +315,37 @@ What it shows, and nothing past it:
 **Not claimed.** One machine (Apple Silicon, one core used); the kernel measured is the pivot loop only, not the rest of the iteration (the ratio test and the pricing loops are O(rows + columns) and were not timed separately: the counter and the loop's rate put the pivot at about all of the run); ARM64 only, so what the checks cost on x86-64 (SSE2 baseline, the machine of `docs/check-cost.md`) is not measured here.
 
 **Which compiler (a correction).** The measurements above were first made with `cancho` built from the Rust workspace (`target/debug/cancho`, an older commit than the pin, on a branch that was not `main`). The Rust compiler is the legacy one; the compiler people run is the cancho-written one (`docs/standalone-cancho.md`). Re-checked on `main` at `5a5dd1f2`: `scripts/build-standalone.sh` built the standalone `cancho` (three stages, stage 2 equal to stage 3 byte for byte), `cancho build --bin solve` rebuilt `build/solve` with it, and the four gates pass. The 400x800 random LP (`--relax`, three runs, whole process) took 2.46, 2.58 and 2.65 s (2.66 s before); the 2,000-item multi-knapsack took 2.82, 2.68 and 2.54 s (2.38 s before). Same range, so the conclusions of this section stand. The pivot-loop microbenchmarks (`bench/`) and the Cranelift comparison were not re-run: Cranelift is a backend of the Rust compiler (`docs/standalone-cancho.md` §1 lists `--backend cranelift` as unavailable in the cancho-written command line; `build --bin solve --backend cranelift` with the standalone `cancho` was tried and answered `unknown option --bin`), so that comparison is of the legacy build only.
+
+## 17. Fewer iterations: the bound-flipping ratio test (written before the code)
+
+Section 16 found the gap to HiGHS is iteration count (8 to 200 times as many) and dense work per iteration. This section takes the first, in two steps; each is measured by the benchmark of section 15 (`scripts/bench_highs.py`, column "our iters") before the next is started.
+
+**17.1 Bound flipping (the long-step ratio test).** Every variable here is boxed, and the ratio test of section 14 stops at the first breakpoint: the nearest nonbasic column whose reduced cost reaches zero. A boxed column may instead be *passed*: it is moved to its other bound, which keeps it dual feasible (its reduced cost changes sign exactly when the step passes it), and costs nothing in a pivot. The leaving row's infeasibility `delta` is a slope that each passed column lowers by `|a_rj| * (hi_j - lo_j)`. **[choice]**
+1. The eligible columns are those of section 14, with ratios `|d_j| / |a_rj|`, taken in increasing order (ties: larger `|a_rj|` first, as now).
+2. For each in turn, `slope = delta - |a_rj| * (hi_j - lo_j)`. While `slope > tol` (`tol = 1e-9 * (1 + delta)`) the column is flipped and `delta = slope`. The first column with `slope <= tol` enters the basis.
+3. If the columns run out with `delta > tol`, the row cannot be made feasible: infeasible, as now when no column is eligible.
+4. The primal values of the basic variables take every flip: `z_B(i) -= T[i][j] * (new bound - old bound)`; only then is the step of the entering column computed from what is left of the leaving variable's violation.
+
+An infinite range (the logical variables of one-sided rows hold `1e300`) makes the slope negative at once, so such a column enters as before. The picks are made by repeated selection of the minimum, not a sort: the usual number of flips is small, and the cost is measured below, not assumed.
+
+**Claim to measure.** The iterations fall most where many columns are boxed and cheap to flip (multi-knapsack relaxations, 0..1 variables); network LPs, which already match HiGHS, change little. **Gates:** the oracle (`check_highs.py`, the same 168 instances) must still agree to its tolerances; mutants of the flip (no flip made, flip to the wrong bound, the slope not lowered) must each be killed.
+
+**17.1 results (measured: `scripts/bench_highs.py --runs 3`, compiler `5a5dd1f2`, one machine).** Gates: oracle 168 of 168, language, expand and CLI pass (the iteration-limit test of `lp_basic` now expects 2 iterations, not 3); the seven mutants of the long step and the one whose text changed are all killed. Iterations and time against HiGHS's dual simplex (ours minus start-up / HiGHS), before then after:
+
+| instance | our iterations | ours/HiGHS dual |
+|---|---|---|
+| multi-knapsack 4000 items, 200 rows | 94,644 then 7,084 (HiGHS 471) | 142.6 then 11.1 |
+| multi-knapsack 2000 items, 100 rows | 21,917 then 1,930 (258) | 40.3 then 4.0 |
+| multi-knapsack 1000 items, 50 rows | 4,902 then 458 (126) | 11.3 then 1.2 |
+| random dense 800x1600 | 43,028 then 25,655 (2,851) | 13.1 then 8.1 |
+| random dense 400x800 | 9,020 then 7,102 (1,118) | 8.5 then 7.0 |
+| transportation 100x160, assignment 100x100 | 369 then 364, 393 then 333 | 1.2 then 1.2, 1.3 then 1.0 |
+
+The claim of 17.1 held: the boxed families gain most (a factor of 10 to 13 in iterations), the network LPs match HiGHS before and after. The random dense LPs, whose columns are boxed over a wide range, gain a factor of 1.3 to 1.7, so they remain 7 to 8 times behind and are what 17.2 is for. The cost of the repeated selection was not separated; it is inside the totals above.
+
+**17.2 Dual steepest-edge pricing (written before the code).** The leaving row is now the one with the largest violation, which depends on how the rows are scaled. Dual steepest edge chooses the row maximising `viol_i^2 / w_i`, where `w_i = ||row i of B^-1||^2` is the squared length of the dual edge. **[choice]**
+- In this tableau `B^-1` is the block of the `m` logical columns of `T` (the logical columns start as the identity and the pivot is Gauss-Jordan on all columns), so `w_i` is the sum of the squares of row `i` over the columns `n .. n+m-1`. At the slack basis it is 1 for every row (exact, no setup).
+- **Exact, not updated by formula:** the textbook update of `w` needs `B^-1 rho_r` for every row (another `m^2` work and a place for drift). Here the pivot loop already rewrites each changed row, so it recomputes `w_i` from the new row in the same pass (the loop over `j` is split at `n`: structural columns as now; logical columns also accumulate `v*v`). A row with `f == 0` is not rewritten and keeps its `w_i`; the pivot row is scaled first and its `w_r` taken from the scaled row. The work added to an iteration is one multiply-add on `m` of the `n + m` cells of each changed row.
+- Pricing: `score = viol^2 / w_i`; `delta` of the long step (17.1) is still the plain violation of the chosen row.
+
+**Claim to measure.** Iterations fall again on the random dense LPs (where the long step helps little, the columns being boxed wide); the cost per iteration rises by at most about `m / (n + m)`. The net time is measured, not assumed: if the iterations fall less than the cost rises, the change is not kept, and the section says so. **Gates:** oracle, CLI and language gates as before; mutants of the pricing (violation not squared, weights not divided, weights not recomputed) must be killed.

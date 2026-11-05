@@ -48,9 +48,9 @@ for n, src in enumerate(files):
                     b[rng.randrange(len(b))] = rng.choice(b"();:.,*/+-<>=[]{} \n\t\0\xff0129aevx")
             run(bytes(b), f"run file {n} mutation", ("run", "--relax"))
 
-# the iteration limit: lp_basic needs 3 iterations
+# the iteration limit: lp_basic needs 2 iterations (3 before the long step of docs/design.md section 17)
 lp = open("tests/ok/lp_basic.sol", "rb").read()
-for limit, want_status, want_iters, want_code in [(0, "unknown", 0, 1), (1, "unknown", 1, 1), (2, "unknown", 2, 1), (3, "optimal", 3, 0), (1000, "optimal", 3, 0)]:
+for limit, want_status, want_iters, want_code in [(0, "unknown", 0, 1), (1, "unknown", 1, 1), (2, "optimal", 2, 0), (3, "optimal", 2, 0), (1000, "optimal", 2, 0)]:
     runs += 1
     p = subprocess.run([SOLVE, "run", "--iteration-limit", str(limit)], input=lp, capture_output=True)
     r = json.loads(p.stdout)

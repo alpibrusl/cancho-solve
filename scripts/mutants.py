@@ -27,7 +27,7 @@ MUTANTS = [
     ("lib/model/stmt.cho", "if kind == 1 && (!ex.whole(lo) || !ex.whole(hi)) {", "if kind == 7 && (!ex.whole(lo) || !ex.whole(hi)) {", "a fractional integer bound is accepted"),
     ("lib/model/expr.cho", "ints[l.h_steps()] > 10000000", "ints[l.h_steps()] > 100000000000", "the loop budget is lifted"),
     # the simplex (S2); gate 4 (check_highs.py) and the limit test of gate 3 have to kill these
-    ("lib/lp/simplex.cho", "ratio < best - 1e-12 ||", "ratio > best + 1e-12 ||", "the entering column has the largest ratio"),
+    ("lib/lp/simplex.cho", "if rk < rbest - 1e-12 ||", "if rk > rbest + 1e-12 ||", "the entering column has the largest ratio"),
     ("lib/lp/simplex.cho", "ok = at == 0 && a < 0.0 || at == 1 && a > 0.0;", "ok = at == 0 && a > 0.0 || at == 1 && a < 0.0;", "the wrong direction is eligible when a basic variable is too low"),
     ("lib/lp/simplex.cho", "let dq = -(target - w[o_v + leaving]) / piv;", "let dq = (target - w[o_v + leaving]) / piv;", "the entering variable moves the wrong way"),
     ("lib/lp/simplex.cho", "if fd != 0.0 {", "if fd == 7.0 {", "the reduced costs are not updated"),
@@ -43,6 +43,13 @@ MUTANTS = [
     ("lib/lp/simplex.cho", "w[i * big + ints[l.term_col(t)]] = -fl[l.term_coef(t)];", "w[i * big + ints[l.term_col(t)]] = fl[l.term_coef(t)];", "the sign of the constraint matrix"),
     ("tools/solve/emit.cho", "obj = obj + fl[l.obj_coef(t2)] * x[ints[l.obj_col(t2)]];", "obj = obj + fl[l.obj_coef(t2)];", "the reported objective ignores x"),
     ("tools/solve/emit.cho", "w = json.put_bool(heap, w, viol <= 1e-6);", "w = json.put_bool(heap, w, true);", "verified is always true"),
+    # the long step (design.md section 17)
+    ("lib/lp/simplex.cho", "w[o_v + cj] = nbound;", "w[o_v + cj] = w[o_v + cj];", "a passed column keeps its value"),
+    ("lib/lp/simplex.cho", "wi[p_at + cj] = now;", "wi[p_at + cj] = wi[p_at + cj];", "a passed column keeps its bound marker"),
+    ("lib/lp/simplex.cho", "let slope = delta - mag(w[rb + cj]) * (w[o_h + cj] - w[o_l + cj]);", "let slope = delta;", "a passed column does not lower the slope"),
+    ("lib/lp/simplex.cho", "delta = slope;", "delta = delta + 0.0;", "the slope is not carried to the next column"),
+    ("lib/lp/simplex.cho", "w[o_v + wi[i]] = w[o_v + wi[i]] - w[i * big + cj] * dx;", "w[o_v + wi[i]] = w[o_v + wi[i]] + w[i * big + cj] * dx;", "the basic values take a flip with the wrong sign"),
+    ("lib/lp/simplex.cho", "if slope <= 1e-9 * (1.0 + worst) {", "if slope <= 0.5 * (1.0 + worst) {", "a loose slope tolerance enters too early"),
 ]
 
 def build(root, out):

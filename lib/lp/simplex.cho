@@ -48,8 +48,10 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
     let o_v = o_d + big;
     let o_l = o_v + big;
     let o_h = o_l + big;
+    let o_r = o_h + big;
     let p_pos = m;
     let p_at = m + big;
+    let p_c = m + 2 * big;
     // bounds
     var k = 0;
     while k < ints[l.h_nsym()] {
@@ -155,11 +157,9 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
         if iter >= limit {
             return s_limit();
         }
-        // the entering variable: minimum dual ratio among the columns that move the basic variable the right way
+        // the candidates: columns that move the basic variable the right way, with their dual ratios
         let rb = r * big;
-        var q = 0 - 1;
-        var best = 0.0;
-        var best_abs = 0.0;
+        var nc = 0;
         j = 0;
         while j < big {
             if wi[p_pos + j] < 0 && w[o_h + j] - w[o_l + j] > 1e-12 {
@@ -173,16 +173,55 @@ fn iterate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], w: &!c [float], w
                         ok = at == 0 && a > 0.0 || at == 1 && a < 0.0;
                     }
                     if ok {
-                        let ratio = mag(w[o_d + j]) / mag(a);
-                        if q < 0 || ratio < best - 1e-12 || ratio <= best + 1e-12 && mag(a) > best_abs {
-                            q = j;
-                            best = ratio;
-                            best_abs = mag(a);
-                        }
+                        wi[p_c + nc] = j;
+                        w[o_r + nc] = mag(w[o_d + j]) / mag(a);
+                        nc = nc + 1;
                     }
                 }
             }
             j = j + 1;
+        }
+        // the long step (docs/design.md section 17): take the candidates in increasing ratio; while the slope of the leaving variable's violation stays positive
+        // the candidate is passed, that is moved to its other bound, and the first one that makes the slope fall to zero enters
+        var q = 0 - 1;
+        var delta = worst;
+        var left = nc;
+        while q < 0 && left > 0 {
+            var bi = 0;
+            var k2 = 1;
+            while k2 < left {
+                let rk = w[o_r + k2];
+                let rbest = w[o_r + bi];
+                if rk < rbest - 1e-12 || rk <= rbest + 1e-12 && mag(w[rb + wi[p_c + k2]]) > mag(w[rb + wi[p_c + bi]]) {
+                    bi = k2;
+                }
+                k2 = k2 + 1;
+            }
+            let cj = wi[p_c + bi];
+            wi[p_c + bi] = wi[p_c + left - 1];
+            w[o_r + bi] = w[o_r + left - 1];
+            left = left - 1;
+            let slope = delta - mag(w[rb + cj]) * (w[o_h + cj] - w[o_l + cj]);
+            if slope <= 1e-9 * (1.0 + worst) {
+                q = cj;
+            } else {
+                delta = slope;
+                var dx = w[o_h + cj] - w[o_l + cj];
+                var nbound = w[o_h + cj];
+                var now = 1;
+                if wi[p_at + cj] == 1 {
+                    dx = -dx;
+                    nbound = w[o_l + cj];
+                    now = 0;
+                }
+                i = 0;
+                while i < m {
+                    w[o_v + wi[i]] = w[o_v + wi[i]] - w[i * big + cj] * dx;
+                    i = i + 1;
+                }
+                w[o_v + cj] = nbound;
+                wi[p_at + cj] = now;
+            }
         }
         if q < 0 {
             return s_infeasible();
@@ -259,15 +298,15 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
     stats[0] = 0;
     stats[1] = m;
     stats[2] = n;
-    if m * big + 5 * big > max_cells() {
+    if m * big + 6 * big > max_cells() {
         return s_too_large();
     }
     var cap = limit;
     if limit < 0 {
         cap = 100 * big + 1000;
     }
-    let w = box_slice(heap, m * big + 5 * big + 1, 0.0);
-    let wi = box_slice(heap, m + 2 * big + 1, 0);
+    let w = box_slice(heap, m * big + 6 * big + 1, 0.0);
+    let wi = box_slice(heap, m + 3 * big + 1, 0);
     var status = 0;
     borrow mut w as &!ww in {
         borrow mut wi as &!wiw in {
