@@ -113,13 +113,13 @@ def illcond_cols(r, m):
         out.append((rows, vals))
     return out
 
-def case_json(m, cols, etas, bs, cs):
+def case_json(m, cols, etas, bs, cs, bh=(), ch=()):
     bstart, bind, bval = [0], [], []
     for rows, vals in cols:
         bind += rows
         bval += vals
         bstart.append(len(bind))
-    return {"m": m, "bstart": bstart, "bind": bind, "bval": bval, "etas": [{"r": r_, "rows": rw, "vals": vl} for r_, rw, vl in etas], "ftran": bs, "btran": cs}
+    return {"m": m, "bstart": bstart, "bind": bind, "bval": bval, "etas": [{"r": r_, "rows": rw, "vals": vl} for r_, rw, vl in etas], "ftran": bs, "btran": cs, "ftran_h": list(bh), "btran_h": list(ch)}
 
 def scaled_res(B, x, b, left=False):
     if left:
@@ -159,7 +159,15 @@ for name, m, cols in families(int(os.environ.get("SEED", "11"))):
     Bf = dense_of(m, cur)
     bs = [[r.uniform(-1, 1) for _ in range(m)] for _ in range(3)] + [[1.0] * m]
     cs = [[r.uniform(-1, 1) for _ in range(m)] for _ in range(3)] + [[0.0] * (m - 1) + [1.0]]
-    pr = run(case_json(m, cols, etas, bs, cs))
+    # sparse right-hand sides for the hypersparse solves (design.md 21.2): one to six nonzeros, and a unit vector at each end
+    def sparse_vec():
+        v = [0.0] * m
+        for i in r.sample(range(m), min(m, r.randint(1, 6))):
+            v[i] = r.uniform(-1, 1) or 0.5
+        return v
+    bh = [sparse_vec() for _ in range(4)] + [[1.0 if i == 0 else 0.0 for i in range(m)], [1.0 if i == m - 1 else 0.0 for i in range(m)]]
+    ch = [sparse_vec() for _ in range(4)] + [[1.0 if i == 0 else 0.0 for i in range(m)], [1.0 if i == m - 1 else 0.0 for i in range(m)]]
+    pr = run(case_json(m, cols, etas, bs, cs, bh, ch))
     checked += 1
     if pr.returncode != 0:
         print(f"FAIL {name}: driver status {pr.returncode}: {pr.stderr.strip()[:200]} {pr.stdout.strip()[:200]}")
@@ -203,6 +211,25 @@ for name, m, cols in families(int(os.environ.get("SEED", "11"))):
         if res > 1e-9 or (diff > 1e-7 and not ill):
             print(f"FAIL {name}: BTRAN residual {res:.2e}, difference from splu {diff:.2e} (m={m}, {len(etas)} etas)")
             bad += 1
+
+    for kind, vecs, outs in (("FTRAN_H", bh, got["ftran_h"]), ("BTRAN_H", ch, got["btran_h"])):
+        for b, o in zip(vecs, outs):
+            x = np.array(o["x"]); b = np.array(b); idx = o["idx"]
+            nsolves += 1
+            res = scaled_res(Bf, x, b, left=(kind == "BTRAN_H"))
+            ref = lu.solve(b, trans="T" if kind == "BTRAN_H" else "N")
+            diff = np.max(np.abs(x - ref)) / (1 + np.max(np.abs(ref)))
+            worst = max(worst, res)
+            if res > 1e-9 or (diff > 1e-7 and not ill):
+                print(f"FAIL {name}: {kind} residual {res:.2e}, difference from splu {diff:.2e} (m={m}, {len(etas)} etas)")
+                bad += 1
+            if len(set(idx)) != len(idx) or any(not 0 <= i < m for i in idx):
+                print(f"FAIL {name}: {kind} list has a repeated or out-of-range index: {idx[:20]}")
+                bad += 1
+            missing = [i for i in range(m) if x[i] != 0.0 and i not in set(idx)]
+            if missing:
+                print(f"FAIL {name}: {kind} nonzero entries {missing[:10]} are not in the returned list")
+                bad += 1
 
 # a singular basis must be reported, not solved
 sing = case_json(3, [([0], [1.0]), ([1], [1.0]), ([1], [2.0])], [], [[1.0, 1.0, 1.0]], [[1.0, 1.0, 1.0]])

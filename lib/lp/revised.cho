@@ -50,7 +50,7 @@ fn interval() -> [] int {
 
 // Sizes of the two work slices: ints, floats.
 pub fn wi_len(m: int, n: int, nnz: int) -> [] int {
-    return 64 + (n + 1) + nnz + (m + 1) + nnz + m + 3 * (n + m) + 2 * n + (m + 1) + (nnz + m) + 8;
+    return 64 + (n + 1) + nnz + (m + 1) + nnz + m + 3 * (n + m) + 2 * n + (m + 1) + (nnz + m) + 8 + 7 * m;
 }
 
 pub fn wf_len(m: int, n: int, nnz: int) -> [] int {
@@ -120,6 +120,24 @@ fn layout_offsets[&a](wi: &!a [int], m: int, n: int, nnz: int) -> [] int {
     q = q + nnz;
     wi[30] = q;
     wi[31] = 0;
+    // the lists of the iteration (design.md 21.2): 33 rho, 34 alpha, 35 tau, 36 flip vector, 37 infeasible rows, 38 position of a row in that list, 40 marks of the flip vector;
+    // 39 is the length of the list of infeasible rows. They follow the integer arrays above (the last of which, `bind`, takes nnz + m).
+    o = o + nnz + m;
+    wi[33] = o;
+    o = o + m;
+    wi[34] = o;
+    o = o + m;
+    wi[35] = o;
+    o = o + m;
+    wi[36] = o;
+    o = o + m;
+    wi[37] = o;
+    o = o + m;
+    wi[38] = o;
+    o = o + m;
+    wi[40] = o;
+    o = o + m;
+    wi[39] = 0;
     return 0;
 }
 
@@ -390,6 +408,7 @@ fn recompute[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &c [int], ff: &
     while p < m {
         wf[o_z + wi[o_bs + p]] = -wf[o_sv + p];
         wf[o_sv + p] = 0.0;
+        wf[o_rho + p] = 0.0;
         p = p + 1;
     }
     return 0;
@@ -410,11 +429,62 @@ fn refactor[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &
     return recompute(wi, wf, fi, ff);
 }
 
-// The loop. Returns a result code; `stats[0]` is the iteration count.
+// The signed infeasibility of the basic variable at position i: positive when below its lower bound (by that much), negative when above its upper bound, 0 when feasible.
+fn row_viol[&a, &b](wi: &a [int], wf: &b [float], i: int) -> [] float {
+    let bv = wi[wi[8] + i];
+    let v = wf[wi[18] + bv];
+    let lb = wf[wi[19] + bv];
+    let ub = wf[wi[20] + bv];
+    if v < lb - 1e-9 * (1.0 + mag(lb)) {
+        return lb - v;
+    }
+    if v > ub + 1e-9 * (1.0 + mag(ub)) {
+        return ub - v;
+    }
+    return 0.0;
+}
+
+// Puts position i in the list of infeasible rows if it is infeasible and not yet listed (design.md 21.2).
+fn touch_row[&a, &b](wi: &!a [int], wf: &b [float], i: int) -> [] int {
+    if wi[wi[38] + i] < 0 && row_viol(wi, wf, i) != 0.0 {
+        wi[wi[37] + wi[39]] = i;
+        wi[wi[38] + i] = wi[39];
+        wi[39] = wi[39] + 1;
+    }
+    return 0;
+}
+
+// The list of infeasible rows from scratch.
+fn rebuild_infeasible[&a, &b](wi: &!a [int], wf: &b [float]) -> [] int {
+    let m = wi[0];
+    wi[39] = 0;
+    var i = 0;
+    while i < m {
+        wi[wi[38] + i] = 0 - 1;
+        i = i + 1;
+    }
+    i = 0;
+    while i < m {
+        touch_row(wi, wf, i);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// `refactor`, and the list of infeasible rows again when it succeeded.
+fn refactor_i[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float]) -> [] int {
+    let code = refactor(wi, wf, fi, ff);
+    if code == 0 {
+        rebuild_infeasible(wi, wf);
+    }
+    return code;
+}
+
+// The loop. Returns a result code; `stats[0]` is the iteration count. Every vector of an iteration (`rho`, `alpha`, `tau`, the flip vector) is a dense work vector with the list of
+// its nonzero indices, and the pricing runs over the list of infeasible rows, so an iteration costs what its vectors hold, not the number of rows (design.md 21.2).
 fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float], stats: &!e [int], limit: int) -> [] int {
     let m = wi[0];
     let n = wi[1];
-    let big = n + m;
     let o_cs = wi[4];
     let o_cr = wi[5];
     let o_rs = wi[6];
@@ -439,43 +509,58 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
     let o_ra = wi[27];
     let o_cv = wi[28];
     let o_rv = wi[29];
+    let o_rl = wi[33];
+    let o_il = wi[34];
+    let o_tl = wi[35];
+    let o_sl = wi[36];
+    let o_li = wi[37];
+    let o_sm = wi[40];
+    // the work vectors are zero between iterations; a call that ended in the middle of one (or a recomputation) may have left them dirty
+    var i = 0;
+    while i < m {
+        wf[o_rho + i] = 0.0;
+        wf[o_al + i] = 0.0;
+        wf[o_tau + i] = 0.0;
+        wf[o_sv + i] = 0.0;
+        wi[o_sm + i] = 0;
+        i = i + 1;
+    }
+    rebuild_infeasible(wi, wf);
     var iter = 0;
     while true {
-        // the basic variable of largest steepest-edge price
+        // the basic variable of largest steepest-edge price, among the listed infeasible rows (ties: the smaller position)
         var r = 0 - 1;
         var worst = 0.0;
         var score = 0.0;
         var up = false;
-        var i = 0;
-        while i < m {
-            let bv = wi[o_bs + i];
-            let v = wf[o_z + bv];
-            let lb = wf[o_lo + bv];
-            let ub = wf[o_hi + bv];
-            var viol = 0.0;
-            var below = false;
-            if v < lb - 1e-9 * (1.0 + mag(lb)) {
-                viol = lb - v;
-                below = true;
-            } else if v > ub + 1e-9 * (1.0 + mag(ub)) {
-                viol = v - ub;
-            }
-            if viol > 0.0 {
-                let sc = viol * viol / wf[o_wt + i];
-                if sc > score {
+        var t = 0;
+        while t < wi[39] {
+            let pi = wi[o_li + t];
+            let sg = row_viol(wi, wf, pi);
+            if sg == 0.0 {
+                // feasible again: leaves the list
+                let lastp = wi[o_li + wi[39] - 1];
+                wi[o_li + t] = lastp;
+                wi[wi[38] + lastp] = t;
+                wi[wi[38] + pi] = 0 - 1;
+                wi[39] = wi[39] - 1;
+            } else {
+                let viol = mag(sg);
+                let sc = viol * viol / wf[o_wt + pi];
+                if sc > score || sc == score && r >= 0 && pi < r {
                     score = sc;
                     worst = viol;
-                    r = i;
-                    up = below;
+                    r = pi;
+                    up = sg > 0.0;
                 }
+                t = t + 1;
             }
-            i = i + 1;
         }
         stats[0] = iter;
         if r < 0 {
             // optimal only straight after a refactorisation
             if fi[4] > 0 {
-                let code = refactor(wi, wf, fi, ff);
+                let code = refactor_i(wi, wf, fi, ff);
                 if code != 0 {
                     return code;
                 }
@@ -486,53 +571,51 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             return s_limit();
         } else {
             // rho = e_r B^-1, and its exact squared length as the weight of the row
-            i = 0;
-            while i < m {
-                wf[o_rho + i] = 0.0;
-                i = i + 1;
-            }
             wf[o_rho + r] = 1.0;
-            sp.btran(fi, ff, wf[o_rho..o_rho + m]);
+            wi[o_rl] = r;
+            let nr = sp.btran_h(fi, ff, wf[o_rho..o_rho + m], wi[o_rl..o_rl + m], 1);
             var wr = 0.0;
-            i = 0;
-            while i < m {
-                wr = wr + wf[o_rho + i] * wf[o_rho + i];
-                i = i + 1;
+            t = 0;
+            while t < nr {
+                let ri = wf[o_rho + wi[o_rl + t]];
+                wr = wr + ri * ri;
+                t = t + 1;
             }
             wf[o_wt + r] = wr;
             // the pivot row: structural columns through the rows of A for the nonzeros of rho
             var nt = 0;
-            i = 0;
-            while i < m {
-                let ri = wf[o_rho + i];
+            t = 0;
+            while t < nr {
+                let i2 = wi[o_rl + t];
+                let ri = wf[o_rho + i2];
                 if ri != 0.0 {
-                    var t = wi[o_rs + i];
-                    while t < wi[o_rs + i + 1] {
-                        let cj = wi[o_rc + t];
+                    var u = wi[o_rs + i2];
+                    while u < wi[o_rs + i2 + 1] {
+                        let cj = wi[o_rc + u];
                         if wi[o_tm + cj] == 0 {
                             wi[o_tm + cj] = 1;
                             wi[o_tc + nt] = cj;
                             nt = nt + 1;
                             wf[o_ar + cj] = 0.0;
                         }
-                        wf[o_ar + cj] = wf[o_ar + cj] + ri * wf[o_rv + t];
-                        t = t + 1;
+                        wf[o_ar + cj] = wf[o_ar + cj] + ri * wf[o_rv + u];
+                        u = u + 1;
                     }
                 }
-                i = i + 1;
+                t = t + 1;
             }
-            // the candidates, with their dual ratios
+            // the candidates, with their dual ratios: the touched structural columns, then the logicals of the nonzero rows of rho
             var nc = 0;
             var s = 0;
-            while s < nt + m {
+            while s < nt + nr {
                 var j = 0;
                 var av = 0.0;
                 if s < nt {
                     j = wi[o_tc + s];
                     av = wf[o_ar + j];
                 } else {
-                    j = n + s - nt;
-                    av = -wf[o_rho + s - nt];
+                    j = n + wi[o_rl + s - nt];
+                    av = -wf[o_rho + wi[o_rl + s - nt]];
                 }
                 if wi[o_ps + j] < 0 && wf[o_hi + j] - wf[o_lo + j] > 1e-12 && mag(av) > 1e-9 {
                     let atb = wi[o_at + j];
@@ -555,6 +638,7 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             var delta = worst;
             var left = nc;
             var flips = 0;
+            var ns = 0;
             while q < 0 && left > 0 {
                 var bi = 0;
                 var k2 = 1;
@@ -604,13 +688,25 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                         now = 0;
                     }
                     if cj < n {
-                        var t = wi[o_cs + cj];
-                        while t < wi[o_cs + cj + 1] {
-                            wf[o_sv + wi[o_cr + t]] = wf[o_sv + wi[o_cr + t]] + wf[o_cv + t] * dx;
-                            t = t + 1;
+                        var u = wi[o_cs + cj];
+                        while u < wi[o_cs + cj + 1] {
+                            let rw = wi[o_cr + u];
+                            wf[o_sv + rw] = wf[o_sv + rw] + wf[o_cv + u] * dx;
+                            if wi[o_sm + rw] == 0 {
+                                wi[o_sm + rw] = 1;
+                                wi[o_sl + ns] = rw;
+                                ns = ns + 1;
+                            }
+                            u = u + 1;
                         }
                     } else {
-                        wf[o_sv + cj - n] = wf[o_sv + cj - n] - dx;
+                        let rw = cj - n;
+                        wf[o_sv + rw] = wf[o_sv + rw] - dx;
+                        if wi[o_sm + rw] == 0 {
+                            wi[o_sm + rw] = 1;
+                            wi[o_sl + ns] = rw;
+                            ns = ns + 1;
+                        }
                     }
                     flips = flips + 1;
                     wf[o_z + cj] = nbound;
@@ -630,32 +726,52 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
             var result = 0 - 1;
             if q < 0 {
                 result = s_infeasible();
+                // leave the work vectors clean
+                t = 0;
+                while t < ns {
+                    wf[o_sv + wi[o_sl + t]] = 0.0;
+                    wi[o_sm + wi[o_sl + t]] = 0;
+                    t = t + 1;
+                }
+                t = 0;
+                while t < nr {
+                    wf[o_rho + wi[o_rl + t]] = 0.0;
+                    t = t + 1;
+                }
             } else {
                 if flips > 0 {
-                    sp.ftran(fi, ff, wf[o_sv..o_sv + m]);
-                    i = 0;
-                    while i < m {
-                        wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_sv + i];
-                        wf[o_sv + i] = 0.0;
-                        i = i + 1;
+                    // the marks name the rows of the right-hand side; clear them before the solve rewrites the list
+                    t = 0;
+                    while t < ns {
+                        wi[o_sm + wi[o_sl + t]] = 0;
+                        t = t + 1;
+                    }
+                    let nf = sp.ftran_h(fi, ff, wf[o_sv..o_sv + m], wi[o_sl..o_sl + m], ns);
+                    t = 0;
+                    while t < nf {
+                        let fp = wi[o_sl + t];
+                        wf[o_z + wi[o_bs + fp]] = wf[o_z + wi[o_bs + fp]] - wf[o_sv + fp];
+                        wf[o_sv + fp] = 0.0;
+                        touch_row(wi, wf, fp);
+                        t = t + 1;
                     }
                 }
                 // alpha = B^-1 M_q
-                i = 0;
-                while i < m {
-                    wf[o_al + i] = 0.0;
-                    i = i + 1;
-                }
+                var na = 0;
                 if q < n {
-                    var t = wi[o_cs + q];
-                    while t < wi[o_cs + q + 1] {
-                        wf[o_al + wi[o_cr + t]] = wf[o_cv + t];
-                        t = t + 1;
+                    var u = wi[o_cs + q];
+                    while u < wi[o_cs + q + 1] {
+                        wf[o_al + wi[o_cr + u]] = wf[o_cv + u];
+                        wi[o_il + na] = wi[o_cr + u];
+                        na = na + 1;
+                        u = u + 1;
                     }
                 } else {
                     wf[o_al + q - n] = -1.0;
+                    wi[o_il] = q - n;
+                    na = 1;
                 }
-                sp.ftran(fi, ff, wf[o_al..o_al + m]);
+                na = sp.ftran_h(fi, ff, wf[o_al..o_al + m], wi[o_il..o_il + m], na);
                 let piv = wf[o_al + r];
                 if fi[4] > 0 && (mag(piv - arq) > 1e-7 * (1.0 + mag(arq)) || mag(piv) < 1e-9) {
                     restart = true;
@@ -667,49 +783,55 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                         target = wf[o_lo + leaving];
                     }
                     let dq = -(target - wf[o_z + leaving]) / piv;
-                    i = 0;
-                    while i < m {
-                        if i != r {
-                            wf[o_z + wi[o_bs + i]] = wf[o_z + wi[o_bs + i]] - wf[o_al + i] * dq;
+                    t = 0;
+                    while t < na {
+                        let ap = wi[o_il + t];
+                        if ap != r {
+                            wf[o_z + wi[o_bs + ap]] = wf[o_z + wi[o_bs + ap]] - wf[o_al + ap] * dq;
+                            touch_row(wi, wf, ap);
                         }
-                        i = i + 1;
+                        t = t + 1;
                     }
                     wf[o_z + q] = wf[o_z + q] + dq;
                     wf[o_z + leaving] = target;
                     // tau = B^-1 rho^T, then the steepest-edge weights
-                    i = 0;
-                    while i < m {
-                        wf[o_tau + i] = wf[o_rho + i];
-                        i = i + 1;
+                    t = 0;
+                    while t < nr {
+                        let rp = wi[o_rl + t];
+                        wf[o_tau + rp] = wf[o_rho + rp];
+                        wi[o_tl + t] = rp;
+                        t = t + 1;
                     }
-                    sp.ftran(fi, ff, wf[o_tau..o_tau + m]);
-                    i = 0;
-                    while i < m {
-                        if i != r && wf[o_al + i] != 0.0 {
-                            let kap = wf[o_al + i] / piv;
-                            var nw = wf[o_wt + i] - 2.0 * kap * wf[o_tau + i] + kap * kap * wr;
+                    let ntau = sp.ftran_h(fi, ff, wf[o_tau..o_tau + m], wi[o_tl..o_tl + m], nr);
+                    t = 0;
+                    while t < na {
+                        let ap = wi[o_il + t];
+                        if ap != r && wf[o_al + ap] != 0.0 {
+                            let kap = wf[o_al + ap] / piv;
+                            var nw = wf[o_wt + ap] - 2.0 * kap * wf[o_tau + ap] + kap * kap * wr;
                             if nw < 1e-4 {
                                 nw = 1e-4;
                             }
-                            wf[o_wt + i] = nw;
+                            wf[o_wt + ap] = nw;
                         }
-                        i = i + 1;
+                        t = t + 1;
                     }
                     wf[o_wt + r] = wr / (piv * piv);
                     // reduced costs
                     let fd = wf[o_dd + q] / piv;
                     if fd != 0.0 {
                         s = 0;
-                        while s < nt + m {
+                        while s < nt + nr {
                             if s < nt {
                                 let j = wi[o_tc + s];
                                 if wi[o_ps + j] < 0 {
                                     wf[o_dd + j] = wf[o_dd + j] - fd * wf[o_ar + j];
                                 }
                             } else {
-                                let j = n + s - nt;
-                                if wi[o_ps + j] < 0 && wf[o_rho + s - nt] != 0.0 {
-                                    wf[o_dd + j] = wf[o_dd + j] + fd * wf[o_rho + s - nt];
+                                let rp = wi[o_rl + s - nt];
+                                let j = n + rp;
+                                if wi[o_ps + j] < 0 && wf[o_rho + rp] != 0.0 {
+                                    wf[o_dd + j] = wf[o_dd + j] + fd * wf[o_rho + rp];
                                 }
                             }
                             s = s + 1;
@@ -726,14 +848,28 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                     }
                     wi[o_bs + r] = q;
                     wi[o_ps + q] = r;
+                    touch_row(wi, wf, r);
                     iter = iter + 1;
-                    let full = sp.push_eta(fi, ff, r, wf[o_al..o_al + m]);
-                    if full != 0 || fi[4] >= interval() {
-                        result = refactor(wi, wf, fi, ff);
-                        if result == 0 {
-                            result = 0 - 1;
-                        }
+                    let full = sp.push_eta_h(fi, ff, r, wf[o_al..o_al + m], wi[o_il..o_il + m], na);
+                    // clean the work vectors before anything recomputes
+                    t = 0;
+                    while t < ntau {
+                        wf[o_tau + wi[o_tl + t]] = 0.0;
+                        t = t + 1;
                     }
+                    if full != 0 || fi[4] >= interval() {
+                        result = 0 - 2;
+                    }
+                }
+                t = 0;
+                while t < na {
+                    wf[o_al + wi[o_il + t]] = 0.0;
+                    t = t + 1;
+                }
+                t = 0;
+                while t < nr {
+                    wf[o_rho + wi[o_rl + t]] = 0.0;
+                    t = t + 1;
                 }
             }
             // clear the pivot row
@@ -742,8 +878,14 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                 wi[o_tm + wi[o_tc + s]] = 0;
                 s = s + 1;
             }
+            if result == 0 - 2 {
+                result = refactor_i(wi, wf, fi, ff);
+                if result == 0 {
+                    result = 0 - 1;
+                }
+            }
             if restart {
-                let code = refactor(wi, wf, fi, ff);
+                let code = refactor_i(wi, wf, fi, ff);
                 if code != 0 {
                     return code;
                 }
