@@ -12,3 +12,19 @@
 .fig .in { fill: var(--accent-fg); font-size: 12px; }
 .plabel { font: 600 .82rem var(--mono); color: var(--muted); margin: 1.1rem 0 .3rem; }
 .story pre.code { margin: 1rem 0 0; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; margin: 1rem 0 0; font: 600 .82rem var(--mono); }
+.lg::before { content: ""; display: inline-block; width: .8rem; height: .8rem; border-radius: 50%; margin-right: .4rem; vertical-align: -.1rem; background: currentColor; }
+.c-ours { color: var(--accent); } .c-highs { color: var(--good); } .c-scip { color: var(--warn); } .c-cbc { color: var(--muted); }
+.fig.scal { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.fig.scal svg { max-width: none; }
+.fig .grid { stroke: var(--line); stroke-width: 1; }
+.fig .ln { fill: none; stroke: currentColor; stroke-width: 2; } .fig .dot { fill: currentColor; }
+.fig .x { stroke: currentColor; stroke-width: 2; fill: none; }
+.fig g.c-ours, .fig g.c-highs, .fig g.c-scip, .fig g.c-cbc { color: inherit; }
+.fig .ln.c-ours, .fig .dot.c-ours, .fig g.c-ours { color: var(--accent); }
+.fig .ln.c-highs, .fig .dot.c-highs, .fig g.c-highs { color: var(--good); }
+.fig .ln.c-scip, .fig .dot.c-scip, .fig g.c-scip { color: var(--warn); }
+.fig .ln.c-cbc, .fig .dot.c-cbc, .fig g.c-cbc { color: var(--muted); }
+.tbl { overflow-x: auto; margin: 1rem 0 0; }
+.reading { padding-left: 1.2rem; } .reading li { margin: .8rem 0; max-width: 46rem; }
+table.fit td.slow { color: var(--bad); font-weight: 600; }

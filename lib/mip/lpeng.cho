@@ -15,6 +15,8 @@ module solve.lpeng;
 //   copied        the state was overwritten by a copy (the sparse engine must refactorise at the next `refresh`)
 //   zoff          where the values of the columns start in `w`
 //   copy_f/copy_i copy a whole state (root <-> working)
+//   at_state      -1 when structural column j is basic, 0 when nonbasic at its lower bound, 1 at its upper
+//   rcost         the reduced cost of column j in minimisation form (>= 0 at a lower bound, <= 0 at an upper bound when the state is optimal)
 
 import solve.layout as l;
 import solve.simplex as sx;
@@ -146,4 +148,24 @@ pub fn copy_i[&c, &d](dst: &!c [int], src: &d [int]) -> [] int {
         k = k + 1;
     }
     return 0;
+}
+
+pub fn at_state[&c](eng: int, wi: &c [int], m: int, n: int, j: int) -> [] int {
+    if eng == 1 {
+        if wi[wi[9] + j] >= 0 {
+            return 0 - 1;
+        }
+        return wi[wi[10] + j];
+    }
+    if wi[m + j] >= 0 {
+        return 0 - 1;
+    }
+    return wi[m + n + m + j];
+}
+
+pub fn rcost[&c, &d](eng: int, w: &c [float], wi: &d [int], m: int, n: int, j: int) -> [] float {
+    if eng == 1 {
+        return w[wi[17] + j];
+    }
+    return w[m * (n + m) + j];
 }

@@ -17,7 +17,7 @@
 <a class="skip" href="#main">Skip to content</a>
 <header class="top"><div class="wrap">
   <a class="brand" href="./">cancho-solve</a>
-  <nav aria-label="Site"><a href="index.html">Home</a><a href="examples.html" aria-current="page">Examples</a><a href="stories.html">Stories</a><a href="https://github.com/alpibrusl/cancho-solve">GitHub</a></nav>
+  <nav aria-label="Site"><a href="index.html">Home</a><a href="examples.html" aria-current="page">Examples</a><a href="stories.html">Stories</a><a href="scaling.html">Scaling</a><a href="https://github.com/alpibrusl/cancho-solve">GitHub</a></nav>
 </div></header>
 <main id="main">
 <div class="wrap pagehead"><p class="eyebrow">every command, with its real output</p><h1>Examples</h1><p class="lead">Each block is a model of <code>docs/examples</code> and what the built <code>solve</code> printed for it. The same models feed the <a href="stories.html">stories</a>.</p>
@@ -51,13 +51,13 @@ maximize income: sum i in 0..n: fee[i] * take[i];
 
 subject to
     weight: sum i in 0..n: w[i] * take[i] &lt;= cap;</code></pre><div class="plabel">run and run --relax</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; van.sol</span>
-<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":6,"rows":1,"columns":6,"nodes":7,"branched":4,"method":"dense"}}</span>
+<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":5,"rows":1,"columns":6,"nodes":6,"branched":3,"method":"dense","cuts":0}}</span>
 <span class="a">$ solve run --relax &lt; van.sol</span>
 <span class="g">{"status":"optimal","relaxed":true,"objective":22.857142857142858,"x":{"take[0]":0.0,"take[1]":0.0,"take[2]":0.0,"take[3]":1.0,"take[4]":0.8571428571428572,"take[5]":1.0},"verified":true,"max_violation":0.0,"stats":{"iterations":1,"rows":1,"columns":6}}</span></pre></div><p class="fine">The relaxation takes fractional parcels (fee 22.857142857142858 against 21.0 whole parcels), which is why the search has to branch.</p></div></section>
 <section class="sec" id="expand"><div class="wrap"><h2>The flat model</h2><p class="lead"><code>expand</code> prints what a solver reads: every variable with its bounds, the objective and every constraint, with the sums and loops written out. It is the model the checker and the verifier both stand on.</p><div class="plabel">expand</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve expand &lt; van.sol</span>
 <span class="g">{"variables":[{"name":"take[0]","kind":"bool","lo":0.0,"hi":1.0},{"name":"take[1]","kind":"bool","lo":0.0,"hi":1.0},"\u2026"],"objective":{"sense":"maximize","name":"income","constant":0.0,"terms":[[0,4.0],[1,2.0],[2,1.0],[3,10.0],[4,8.0],[5,6.0]]},"constraints":[{"name":"weight","sense":"&lt;=","rhs":15.0,"terms":[[0,12.0],[1,2.0],[2,1.0],[3,4.0],[4,7.0],[5,5.0]]}]}</span></pre></div><p class="fine">Two of the six variables shown; the rest are the same shape.</p></div></section>
 <section class="sec" id="limits"><div class="wrap"><h2>Stopping early</h2><p class="lead">A limit stops the search and says so: the status is <code>unknown</code> or <code>feasible</code>, with a <code>bound</code> (and <code>gap</code>, when there is an incumbent), and the exit status is 1. A limit never prints a wrong optimum.</p><div class="plabel">node and iteration limits</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run --node-limit 3 &lt; van.sol</span>
-<span class="g">{"status":"unknown","limit":"nodes","bound":22.857142857142858,"stats":{"iterations":3,"rows":1,"columns":6,"nodes":3,"branched":3,"method":"dense"}}</span>
+<span class="g">{"status":"feasible","limit":"nodes","objective":18.0,"bound":22.857142857142858,"gap":0.2698412698412699,"x":{"take[0]":0.0,"take[1]":0.0,"take[2]":0.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":3,"rows":1,"columns":6,"nodes":3,"branched":3,"method":"dense","cuts":0}}</span>
 <span class="b"># exit status 1</span>
 <span class="a">$ solve run --iteration-limit 1 &lt; bakery.sol</span>
 <span class="g">{"status":"unknown","limit":"iterations","stats":{"iterations":1,"rows":3,"columns":2}}</span>
@@ -93,11 +93,11 @@ maximize a + b;
 subject to
     both:   a + b &gt;= 2;
     either: a + b &lt;= 1;</code></pre><div class="plabel">an impossible model is an answer</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ solve run &lt; cannot.sol</span>
-<span class="g">{"status":"infeasible","stats":{"iterations":1,"rows":2,"columns":2,"nodes":1,"branched":0,"method":"dense"}}</span></pre></div><div class="plabel">an empty range, and a flag that does not exist</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ echo 'var x : int 5..2; minimize x;' | solve check</span>
+<span class="g">{"status":"infeasible","stats":{"iterations":1,"rows":2,"columns":2,"nodes":1,"branched":0,"method":"dense","cuts":0}}</span></pre></div><div class="plabel">an empty range, and a flag that does not exist</div><div class="replay"><pre class="screen" tabindex="0"><span class="a">$ echo 'var x : int 5..2; minimize x;' | solve check</span>
 <span class="b">{"error":"solve.bad-bounds","message":"a bound is above the other, or an integer variable has a bound that is not whole","repair":"swap the bounds, or write whole numbers for an int variable","at":{"line":1,"col":9}}</span>
 <span class="b"># exit status 2</span>
 <span class="a">$ solve run --bogus</span>
-<span class="b">{"error":"solve.usage","message":"usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo] | verify [--tolerance T] | introspect | skill","repair":"pass one verb; check, expand, run and verify read the model on standard input"}</span>
+<span class="b">{"error":"solve.usage","message":"usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best|hybrid] [--branching fractional|pseudo] | verify [--tolerance T] | introspect | skill","repair":"pass one verb; check, expand, run and verify read the model on standard input"}</span>
 <span class="b"># exit status 2</span></pre></div></div></section>
 </main>
 <footer><div class="wrap">
