@@ -10,7 +10,7 @@ M = "lib/mip/mip.cho"
 MUTANTS = [
     # the MIR inequality
     (C, "let rb = ffloor(bq + 1e-9);\n                let f0 = bq - rb;", "let rb = ffloor(bq + 1e-9) + 1.0;\n                let f0 = bq - rb + 1.0;", "the right side is rounded up"),
-    (C, "if f0 >= 0.05 && f0 <= 0.95 {", "if f0 >= 0.0 && f0 <= 1.0 {", "(equivalent in practice) no safety margin on the fractional part: f0 within 1e-9 of 0 or 1 does not occur on the gate's instances"),
+    (C, "if f0 >= 0.05 && f0 <= 0.95 {", "if f0 >= 0.0 && f0 <= 1.0 {", "no safety margin on the fractional part (killed by the eager-rounds gate: f0 of 0 or 1 does occur)"),
     (C, "let cy = fl2 + fj / (1.0 - f0);\n                        var ylen", "let cy = fl2 + fj / f0;\n                        var ylen", "the fractional coefficient is divided by f0 instead of 1 - f0"),
     (C, "                        var fj = aj - fl2;\n                        fj = fj - f0;", "                        var fj = aj - fl2;", "the fractional part is not reduced by f0"),
     (C, "let cv = sf[5 * n + j] / (d * (1.0 - f0));\n                        var sv", "let cv = sf[5 * n + j] / (d * f0);\n                        var sv", "a continuous column is divided by f0 instead of 1 - f0"),
