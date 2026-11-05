@@ -58,5 +58,17 @@ for name, text, bound_dense, bound_sparse in CASES:
     else:
         print(f"ok   {name}: {it} iterations (bound {bound})")
     check_refactors(name, r)
+# the refactorisation at the interval itself: 200x400 needs 353 iterations; stopped by the limit at 256 (the interval) the solver has made its first factorisation and the one
+# that the 256th iteration triggers, so 2; without the trigger the eta file is only full one iteration later (it holds interval + 1) and the count is 1. Found by the mutant "no
+# refactorisation at the interval", which the counts above cannot tell from a file that fills (353 iterations give the same 3 either way).
+if METHOD in ("sparse", "sparse-raw"):
+    p, _ = run_solve(SOLVE, ["run", "--relax", "--iteration-limit", "256"], CASES[0][1])
+    r = json.loads(p.stdout)
+    got = (r["stats"]["iterations"], r["stats"].get("refactorisations"))
+    if got != (256, 2):
+        bad += 1
+        print(f"FAIL {CASES[0][0]} stopped at 256 iterations: (iterations, refactorisations) = {got}, wanted (256, 2)")
+    else:
+        print(f"ok   {CASES[0][0]}: stopped at 256 iterations, 2 refactorisations (the interval)")
 print("iteration gate:", "FAILED" if bad else "passed", f"({len(CASES) + len(EXACT)} cases, {bad} failures)")
 sys.exit(1 if bad else 0)

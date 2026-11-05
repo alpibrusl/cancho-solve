@@ -810,7 +810,6 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                 t = t + 1;
             }
             wf[o_wt + r] = wr;
-            ih_update(wi, wf, r);
             // the pivot row: structural columns through the rows of A for the nonzeros of rho
             var nt = 0;
             t = 0;
@@ -1077,7 +1076,7 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                     wi[o_bs + r] = q;
                     wi[o_ps + q] = r;
                     iter = iter + 1;
-                    // the prices of the positions whose value or weight moved
+                    // the prices of the positions whose value or weight moved: the nonzeros of alpha (the pivot position among them, its entry being the pivot) and of the flip vector
                     t = 0;
                     while t < na {
                         ih_update(wi, wf, wi[o_il + t]);
@@ -1088,7 +1087,6 @@ fn iterate[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff
                         ih_update(wi, wf, wi[o_sl + t]);
                         t = t + 1;
                     }
-                    ih_update(wi, wf, r);
                     let full = sp.push_eta_h(fi, ff, r, wf[o_al..o_al + m], wi[o_il..o_il + m], na);
                     // clean the work vectors before anything recomputes
                     t = 0;
