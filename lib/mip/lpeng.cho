@@ -2,44 +2,81 @@ edition 7;
 
 module solve.lpeng;
 
-// The LP engine behind the branch-and-bound search (docs/design.md section 19.1): a thin interface over the dense dual simplex, so that the sparse solver of section 18
-// can replace it without touching the search. The state is two slices, `w` (floats) and `wi` (ints), whose layout is the simplex's; only this file and simplex.cho know it.
+// The LP engine behind the branch-and-bound search (docs/design.md sections 19.1 and 19.6): a thin interface over the dense dual simplex (simplex.cho) and over the sparse
+// revised dual simplex (revised.cho), chosen by `eng` (0 dense, 1 sparse), so that the search does not know which it runs. The state is four slices: `w` (floats) and `wi` (ints),
+// whose layout is the engine's, and `fi`/`ff`, the factorisation of the sparse engine (length 1 and unused for the dense one). Only this file and the two solvers know the layout.
 //
-//   wlen/wilen    the length of the two slices for a model with m rows and n columns
-//   load          put the model in the state (slack basis, bounds of the root)
-//   run           the dual simplex from the current state to optimality, infeasibility or a limit
+//   wlen/wilen/filen/fflen  the lengths of the slices for a model with m rows, n columns and nnz nonzeros
+//   too_large     the model does not fit the engine
+//   load          put the model in the state (slack basis, bounds of the root; the sparse engine factorises it)
+//   run           the dual simplex from the current state to optimality, infeasibility or a limit (codes: simplex.s_optimal, s_infeasible, s_limit; more than 2 is numerical trouble)
 //   set_bounds    change the bounds of one structural column in the state, keeping it dual feasible
-//   refresh       recompute the basic values from the nonbasic ones (after set_bounds)
-//   value         the value of a structural column
-//   copy          copy a whole state (root tableau <-> working tableau)
+//   refresh       recompute the basic values from the nonbasic ones (after set_bounds); the sparse engine also repairs the duals and, after `copied`, refactorises
+//   copied        the state was overwritten by a copy (the sparse engine must refactorise at the next `refresh`)
+//   zoff          where the values of the columns start in `w`
+//   copy_f/copy_i copy a whole state (root <-> working)
 
 import solve.layout as l;
 import solve.simplex as sx;
+import solve.revised as rv;
 
-pub fn wlen(m: int, n: int) -> [] int {
+pub fn wlen(eng: int, m: int, n: int, nnz: int) -> [] int {
+    if eng == 1 {
+        return rv.wf_len(m, n, nnz);
+    }
     return m * (n + m) + 6 * (n + m) + m + 1;
 }
 
-pub fn wilen(m: int, n: int) -> [] int {
+pub fn wilen(eng: int, m: int, n: int, nnz: int) -> [] int {
+    if eng == 1 {
+        return rv.wi_len(m, n, nnz);
+    }
     return m + 3 * (n + m) + 1;
 }
 
-pub fn too_large(m: int, n: int) -> [] bool {
+pub fn filen(eng: int, m: int, nnz: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_fi_len(m, nnz);
+    }
+    return 1;
+}
+
+pub fn fflen(eng: int, m: int, nnz: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_ff_len(m, nnz);
+    }
+    return 1;
+}
+
+pub fn too_large(eng: int, m: int, n: int, nnz: int) -> [] bool {
+    if eng == 1 {
+        return rv.ws_too_large(m, nnz);
+    }
     return m * (n + m) + 6 * (n + m) + m > sx.max_cells();
 }
 
-pub fn load[&a, &b, &c, &d](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], m: int, n: int) -> [] int {
+// 0, or (sparse engine) 4/5 when the root basis cannot be factorised.
+pub fn load[&a, &b, &c, &d, &e, &f](eng: int, ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], m: int, n: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_load(ints, fl, wi, w, fi, ff);
+    }
     return sx.init_state(ints, fl, w, wi, m, n);
 }
 
-// Iterations of this call go to stats[0]. Result codes: simplex.s_optimal, s_infeasible, s_limit.
-pub fn run[&c, &d, &e](w: &!c [float], wi: &!d [int], stats: &!e [int], m: int, n: int, limit: int) -> [] int {
+// Iterations of this call go to stats[0]. Result codes: simplex.s_optimal, s_infeasible, s_limit, and for the sparse engine 4 (numerical) and 5 (pool).
+pub fn run[&c, &d, &e, &f, &g](eng: int, w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], stats: &!g [int], m: int, n: int, limit: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_run(wi, w, fi, ff, stats, limit);
+    }
     return sx.dual_loop(w, wi, stats, m, n, limit);
 }
 
 // The bounds of structural column j become [lo, hi]. A nonbasic column keeps the side it sits on (so its reduced cost keeps its sign and the state stays dual feasible)
 // and moves to the new bound on that side; a basic column keeps its value, which `refresh` and the dual simplex then repair.
-pub fn set_bounds[&c, &d](w: &!c [float], wi: &!d [int], m: int, n: int, j: int, lo: float, hi: float) -> [] int {
+pub fn set_bounds[&c, &d](eng: int, w: &!c [float], wi: &!d [int], m: int, n: int, j: int, lo: float, hi: float) -> [] int {
+    if eng == 1 {
+        return rv.ws_set_bounds(wi, w, j, lo, hi);
+    }
     let big = n + m;
     let o_v = m * big + big;
     let o_l = o_v + big;
@@ -56,8 +93,18 @@ pub fn set_bounds[&c, &d](w: &!c [float], wi: &!d [int], m: int, n: int, j: int,
     return 0;
 }
 
-// z_B(i) = -sum over the nonbasic columns of T[i][j] z_j.
-pub fn refresh[&c, &d](w: &!c [float], wi: &!d [int], m: int, n: int) -> [] int {
+pub fn copied[&d](eng: int, wi: &!d [int]) -> [] int {
+    if eng == 1 {
+        return rv.ws_mark_copied(wi);
+    }
+    return 0;
+}
+
+// Dense: z_B(i) = -sum over the nonbasic columns of T[i][j] z_j. Sparse: duals and basic values by the factorisation (a new one after `copied`). 0, or 4/5.
+pub fn refresh[&c, &d, &e, &f](eng: int, w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], m: int, n: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_refresh(wi, w, fi, ff);
+    }
     let big = n + m;
     let o_v = m * big + big;
     var i = 0;
@@ -76,8 +123,11 @@ pub fn refresh[&c, &d](w: &!c [float], wi: &!d [int], m: int, n: int) -> [] int 
     return 0;
 }
 
-pub fn value[&c](w: &c [float], m: int, n: int, j: int) -> [] float {
-    return w[m * (n + m) + (n + m) + j];
+pub fn zoff[&d](eng: int, wi: &d [int], m: int, n: int) -> [] int {
+    if eng == 1 {
+        return rv.ws_zoff(wi);
+    }
+    return m * (n + m) + (n + m);
 }
 
 pub fn copy_f[&c, &d](dst: &!c [float], src: &d [float]) -> [] int {

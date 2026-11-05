@@ -84,6 +84,28 @@ MUTANTS = [
     ("lib/mip/lpeng.cho", "w[o_v + j] = lo;\n        } else {\n            w[o_v + j] = hi;", "w[o_v + j] = hi;\n        } else {\n            w[o_v + j] = lo;", "a nonbasic column moves to the wrong side after a bound change"),
     ("lib/mip/lpeng.cho", "w[o_v + wi[i]] = -s;", "w[o_v + wi[i]] = s;", "refresh has the wrong sign"),
     ("tools/solve/emit.cho", "w = json.put_bool(heap, w, worst <= 1e-6);", "w = json.put_bool(heap, w, true);", "verified is always true (MIP)"),
+    # the sparse engine of the search (docs/design.md 19.6); mutants whose `what` starts with "[sparse]" are judged by the gates run with the sparse engine
+    ("lib/lp/revised.cho", "    if wi[wi[9] + j] < 0 {\n        if wi[wi[10] + j] == 0 {\n            wf[wi[18] + j] = lo;", "    if wi[wi[9] + j] < 0 {\n        if wi[wi[10] + j] == 1 {\n            wf[wi[18] + j] = lo;", "[sparse] a nonbasic column moves to the bound of the wrong side"),
+    ("lib/lp/revised.cho", "    wf[wi[20] + j] = hi;\n    if wi[wi[9] + j] < 0 {", "    wf[wi[20] + j] = lo;\n    if wi[wi[9] + j] < 0 {", "[sparse] the upper bound is not set"),
+    ("lib/lp/revised.cho", "    wf[wi[19] + j] = lo;\n    wf[wi[20] + j] = hi;", "    wf[wi[19] + j] = hi;\n    wf[wi[20] + j] = hi;", "[sparse] the lower bound is not set"),
+    ("lib/lp/revised.cho", "    if wi[32] == 1 {\n        let m = wi[0];", "    if wi[32] == 7 {\n        let m = wi[0];", "[sparse] a copied state is not refactorised"),
+    ("lib/lp/revised.cho", "    wi[32] = 1;\n    return 0;", "    wi[32] = 0;\n    return 0;", "[sparse] copied is not remembered"),
+    ("lib/mip/lpeng.cho", "        return rv.ws_mark_copied(wi);", "        return 0;", "[sparse] the engine is not told the state was copied"),
+    ("lib/mip/mip.cho", "                        le.copied(eng, wi);\n", "", "[sparse] the search does not tell the engine the state was copied"),
+    ("lib/lp/revised.cho", "    return wi[18];\n}", "    return wi[19];\n}", "[sparse] the values are read at the lower bounds"),
+    ("lib/lp/revised.cho", "    return 8 * (nnz + m) + 4096;", "    return 1;", "[sparse] the pool of the factorisation is empty"),
+    ("lib/lp/revised.cho", "    return ws_pool(m, nnz) > 16000000;", "    return ws_pool(m, nnz) > 16;", "[sparse] every model is too large"),
+    ("lib/mip/lpeng.cho", "        return rv.wf_len(m, n, nnz);", "        return rv.wf_len(m, n, 1);", "[sparse] the float state is too short"),
+    ("lib/mip/lpeng.cho", "        return rv.ws_set_bounds(wi, w, j, lo, hi);", "        return 0;", "[sparse] a bound change is ignored"),
+    ("lib/mip/lpeng.cho", "        return rv.ws_refresh(wi, w, fi, ff);", "        return 0;", "[sparse] the values are not refreshed"),
+    ("lib/mip/mip.cho", "                        st = le.refresh(eng, w, wi, fi, ff, m, n);", "                        st = 0;\n                        le.refresh(eng, w, wi, fi, ff, m, n);", "[sparse] a failed refresh is ignored"),
+    ("lib/mip/mip.cho", "            if eng == 0 {\n                st = 0;\n            }", "            st = 0;", "[sparse] a failed load of the root is ignored"),
+    ("lib/mip/mip.cho", "    if reason == 4 {\n        stats[0] = iters;", "    if reason == 7 {\n        stats[0] = iters;", "[sparse] numerical trouble is reported as a result"),
+    ("tools/solve/main.cho", "eng = auto_method(n);", "eng = 0;", "[sparse] auto never chooses the sparse engine"),
+    ("tools/solve/main.cho", "                    sv[8] = eng;\n", "", "[sparse] the report does not say which engine ran"),
+    ("tools/solve/emit.cho", "    if stats[8] == 1 {\n        w = json.put_string(heap, w, \"sparse\");", "    if stats[8] == 0 {\n        w = json.put_string(heap, w, \"sparse\");", "[sparse] the report names the wrong engine"),
+    ("lib/mip/mip.cho", "            if st > sx.s_limit() {\n                reason = 4;\n                running = false;\n                extra = -1e300;\n            } else if st == sx.s_limit() {", "            if st > 77 {\n                reason = 4;\n                running = false;\n                extra = -1e300;\n            } else if st == sx.s_limit() {", "[sparse] numerical trouble at the root is read as a limit"),
+
 ]
 
 def build(root, out):
@@ -111,9 +133,10 @@ for n, (path, old, new, what) in enumerate(MUTANTS):
             print(f"INVALID mutant {n} ({what}): does not build: {b.stderr.strip()[:200]}")
             invalid += 1
             continue
-        env = dict(os.environ, SOLVE=out, SOLVE_METHOD="dense")  # these mutants are of the dense solver (the default `auto` would send sparse models elsewhere)
+        sparse = what.startswith("[sparse]")
+        env = dict(os.environ, SOLVE=out, SOLVE_METHOD="sparse" if sparse else "dense")  # these mutants are of the dense solver (the default `auto` would send sparse models elsewhere)
         dead = False
-        for gate in ("check_language.py", "check_expand.py", "check_highs.py", "check_mip.py", "check_nodes.py", "check_cli.py", "check_iterations.py"):
+        for gate in (("check_mip_engines.py", "check_mip.py", "check_nodes.py", "check_cli.py") if sparse else ("check_language.py", "check_expand.py", "check_highs.py", "check_mip.py", "check_nodes.py", "check_cli.py", "check_iterations.py")):
             if subprocess.run([sys.executable, os.path.join(tmp, "scripts", gate)], cwd=tmp, env=env, capture_output=True).returncode != 0:
                 dead = True
                 break

@@ -817,3 +817,73 @@ pub fn solve[&h, &a, &b, &c, &d](heap: &!h Heap, ints: &a [int], fl: &b [float],
     }
     return status;
 }
+
+// ---- The warm start for the branch and bound search (docs/design.md 19.6). The state is `wi`, `wf`, `fi`, `ff` as in `solve`; nothing above is edited.
+// `wi[32]` is set when `wi`/`wf` were overwritten by a copy of another state: `fi`/`ff` then belong to another basis and `ws_refresh` refactorises.
+
+// The pool of the factorisation for the whole search (`solve` grows it by retrying; a search has no way to, so it starts larger, and a pool that fills ends the search as numerical).
+fn ws_pool(m: int, nnz: int) -> [] int {
+    return 8 * (nnz + m) + 4096;
+}
+
+pub fn ws_too_large(m: int, nnz: int) -> [] bool {
+    return ws_pool(m, nnz) > 16000000;
+}
+
+pub fn ws_fi_len(m: int, nnz: int) -> [] int {
+    return sp.ints_len(m, ws_pool(m, nnz), interval() + 1, interval() * m + 16);
+}
+
+pub fn ws_ff_len(m: int, nnz: int) -> [] int {
+    return sp.floats_len(m, ws_pool(m, nnz), interval() + 1, interval() * m + 16);
+}
+
+// The offset in `wf` of the values of the columns (structural first, then the logicals).
+pub fn ws_zoff[&a](wi: &a [int]) -> [] int {
+    return wi[18];
+}
+
+// Reads the model, sets the slack basis at the bounds of the root and factorises it. 0, or 4/5 (numerical, pool).
+pub fn ws_load[&a, &b, &c, &d, &e, &f](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float], fi: &!e [int], ff: &!f [float]) -> [] int {
+    setup(ints, fl, wi, wf);
+    let m = wi[0];
+    sp.init(fi, m, ws_pool(m, wi[3]), interval() + 1, interval() * m + 16);
+    wi[32] = 0;
+    return refactor(wi, wf, fi, ff);
+}
+
+// The dual simplex from the current state. Codes as `solve`, and 4 (numerical) / 5 (pool). `stats[0]` is the iterations of this call.
+pub fn ws_run[&a, &b, &c, &d, &e](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float], stats: &!e [int], limit: int) -> [] int {
+    return iterate(wi, wf, fi, ff, stats, limit);
+}
+
+// Column j (structural) gets the bounds [lo, hi]. A nonbasic column moves to the new bound on the side it sits on (its reduced cost keeps its sign); a basic one keeps its value.
+pub fn ws_set_bounds[&a, &b](wi: &a [int], wf: &!b [float], j: int, lo: float, hi: float) -> [] int {
+    wf[wi[19] + j] = lo;
+    wf[wi[20] + j] = hi;
+    if wi[wi[9] + j] < 0 {
+        if wi[wi[10] + j] == 0 {
+            wf[wi[18] + j] = lo;
+        } else {
+            wf[wi[18] + j] = hi;
+        }
+    }
+    return 0;
+}
+
+// The state was overwritten by a copy (of the root's): the factorisation is of another basis.
+pub fn ws_mark_copied[&a](wi: &!a [int]) -> [] int {
+    wi[32] = 1;
+    return 0;
+}
+
+// Duals and basic values from the nonbasic values, after bound changes: by the current factorisation, or after a copy by a new one. 0, 4, 5.
+pub fn ws_refresh[&a, &b, &c, &d](wi: &!a [int], wf: &!b [float], fi: &!c [int], ff: &!d [float]) -> [] int {
+    if wi[32] == 1 {
+        let m = wi[0];
+        sp.init(fi, m, ws_pool(m, wi[3]), interval() + 1, interval() * m + 16);
+        wi[32] = 0;
+        return refactor(wi, wf, fi, ff);
+    }
+    return recompute(wi, wf, fi, ff);
+}
