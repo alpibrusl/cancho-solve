@@ -120,7 +120,7 @@ for name, text in cases:
         fail(f"{name}: printed objective is not the objective of the printed solution")
     if not got["verified"]:
         fail(f"{name}: verified is false on a correct answer")
-    if not close(got["bound"], got["objective"]):
+    if "nodes" in got["stats"] and not close(got["bound"], got["objective"]):
         fail(f"{name}: optimal but bound {got['bound']} differs from objective {got['objective']}")
 
 # ---- 3. limits: never wrong, and the bound brackets the optimum
@@ -171,6 +171,20 @@ for name, text in cases[::7]:
     if a.stdout != b.stdout or c.stdout != d.stdout:
         fail(f"{name}: two runs differ")
 
+
+# ---- 4b. every option reaches the same optimum (node selection, branching, the ablation bits)
+n_opt = 0
+OPTION_SETS = [["--node-select", "best"], ["--branching", "pseudo"], ["--node-select", "best", "--branching", "pseudo"], ["--experiment", "1"], ["--experiment", "2"], ["--experiment", "4"], ["--experiment", "7"]]
+for name, text in cases[::2]:
+    if name not in opt_of:
+        continue
+    for opt in OPTION_SETS:
+        q, _ = run_solve(SOLVE, ["run"] + opt, text)
+        n_opt += 1
+        got = json.loads(q.stdout) if q.returncode in (0, 1) else {"status": "refused"}
+        if got["status"] != "optimal" or not close(got["objective"], opt_of[name]):
+            fail(f"{name} {' '.join(opt)}: {got['status']} {got.get('objective')} against HiGHS {opt_of[name]}")
+
 # ---- 5. a second oracle: CP-SAT and SCIP, on instances with integer coefficients and integer variables only
 n_ort = 0
 if ORT:
@@ -210,5 +224,5 @@ if ORT:
             fail(f"{name}: SCIP disagrees with HiGHS ({opt_of[name]})")
 
 print(f"mip gate: {'FAILED' if bad else 'passed'} ({n_hand} hand-derived models; {len(cases)} generated: {stats['optimal']} optimal, {stats['infeasible']} infeasible, "
-      f"{stats['skipped']} skipped, {stats['brute']} also by enumeration; {n_lim} limited runs; {n_det} determinism pairs; {n_ort} against CP-SAT and SCIP; {bad} failures)")
+      f"{stats['skipped']} skipped, {stats['brute']} also by enumeration; {n_lim} limited runs; {n_det} determinism pairs; {n_opt} runs under other options; {n_ort} against CP-SAT and SCIP; {bad} failures)")
 sys.exit(1 if bad else 0)

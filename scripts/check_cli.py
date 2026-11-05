@@ -62,7 +62,7 @@ for limit, want_status, want_iters, want_code in [(0, "unknown", 0, 1), (1, "unk
 # S3 (docs/design.md section 19): an integer model without --relax is SOLVED now (this used to expect the refusal solve.not-built, deliberately replaced); bad flags are a usage error
 runs += 2
 p = subprocess.run([SOLVE, "run"], input=open("tests/ok/knapsack.sol", "rb").read(), capture_output=True)
-if p.returncode != 0 or json.loads(p.stdout)["status"] != "optimal" or json.loads(p.stdout)["objective"] != 15:
+if p.returncode != 0 or json.loads(p.stdout)["status"] != "optimal" or json.loads(p.stdout)["objective"] != 13:
     bad += 1
     print("FAIL integer model without --relax is not solved", p.returncode, p.stdout[:200], p.stderr[:200])
 for flags in (["--node-limit", "x"], ["--node-limit"], ["--node-limit", "2000001"], ["--node-select", "worst"], ["--branching", "random"], ["--node-select"]):

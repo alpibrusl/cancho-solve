@@ -4,7 +4,7 @@ edition 7;
 //
 //     solve check           read a model on standard input and check it
 //     solve expand          read a model on standard input and print the expanded flat model (docs/design.md section 12)
-//     solve run [--relax] [--iteration-limit N]   solve the linear program (docs/design.md section 14)
+//     solve run [--relax] [--iteration-limit N] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo]   solve the model: an LP (section 14) or a MIP (section 19)
 //     solve introspect      the commands, exit codes and rule tags as JSON
 //     solve skill           how to write a model, as text
 //
@@ -19,6 +19,7 @@ edition 7;
 import solve.emit;
 import solve.layout;
 import solve.lex;
+import solve.mip;
 import solve.simplex;
 import solve.stmt;
 import std.buffer;
@@ -36,8 +37,48 @@ fn slurp[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_read] buffer.Buffer {
     return out;
 }
 
+// A model with integer variables: branch and bound (docs/design.md section 19). Options: the iteration budget (-1 none), the node limit, node selection, branching, experiment bits.
+fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a [int], f: &b [float], limit: int, onodes: int, osel: int, obr: int, oexp: int) -> [heap, io_write, err_write] int {
+    if onodes > mip.max_node_limit() {
+        return emit.refuse(heap, io, "solve.too-large", "the node limit is above 2,000,000", "pass a smaller --node-limit", tx, 0 - 1);
+    }
+    let opts = box_slice(heap, 5, 0);
+    let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
+    let st = box_slice(heap, 8, 0);
+    let fr = box_slice(heap, 2, 0.0);
+    var status = 0;
+    borrow mut opts as &!ow in {
+        let ov = contents(ow);
+        ov[0] = limit;
+        ov[1] = onodes;
+        ov[2] = osel;
+        ov[3] = obr;
+        ov[4] = oexp;
+        borrow mut xs as &!xw in {
+            borrow mut st as &!sw in {
+                borrow mut fr as &!fw in {
+                    let xv = contents(xw);
+                    let sv = contents(sw);
+                    let fv = contents(fw);
+                    let code = mip.search(heap, n, f, xv, sv, fv, ov);
+                    if code == mip.r_too_large() {
+                        status = emit.refuse(heap, io, "solve.too-large", "the dense tableau would exceed 32,000,000 cells", "reduce the model; the dense simplex is a first solver (docs/design.md section 14)", tx, 0 - 1);
+                    } else {
+                        status = emit.mip_report(heap, io, tx, n, f, xv, sv, fv, code);
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, fr);
+    unbox_slice(heap, st);
+    unbox_slice(heap, xs);
+    unbox_slice(heap, opts);
+    return status;
+}
+
 // mode 0 `check`, 1 `expand`, 2 `run` (with `relax` and `limit`).
-fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: int) -> [heap, io_read, io_write, err_write] int {
+fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: int, onodes: int, osel: int, obr: int, oexp: int) -> [heap, io_read, io_write, err_write] int {
     let text = slurp(heap, io);
     let ints = box_slice(heap, layout.ints_len(), 0);
     let fl = box_slice(heap, layout.fl_len(), 0.0);
@@ -55,7 +96,7 @@ fn run_model[&h, &i](heap: &!h Heap, io: &!i Io, mode: int, relax: bool, limit: 
                     status = emit.expand(heap, io, tx, n, f);
                 } else if mode == 2 {
                     if n[layout.h_nints()] > 0 && !relax {
-                        status = emit.refuse(heap, io, "solve.not-built", "integer and boolean variables need the MIP solver, which is not built yet (docs/design.md section 9, S3)", "pass --relax to solve the relaxation, or declare the variables real", tx, 0 - 1);
+                        status = run_mip(heap, io, tx, n, f, limit, onodes, osel, obr, oexp);
                     } else {
                         let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
                         let st = box_slice(heap, 4, 0);
@@ -105,7 +146,7 @@ fn parse_count[&a](text: &a [byte]) -> [] int {
 }
 
 fn usage[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, err_write] int {
-    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] | introspect | skill", "pass one verb; check and expand read the model on standard input", "", 0 - 1);
+    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] [--node-limit N] [--node-select depth|best] [--branching fractional|pseudo] | introspect | skill", "pass one verb; check and expand read the model on standard input", "", 0 - 1);
 }
 
 fn main(world: World) -> [] int {
@@ -123,12 +164,16 @@ fn main(world: World) -> [] int {
                 if arg_count(g) < 2 {
                     status = usage(h, i);
                 } else if bytes.equal(arg(g, 1), "check") {
-                    status = run_model(h, i, 0, false, 0 - 1);
+                    status = run_model(h, i, 0, false, 0 - 1, 0, 0, 0, 0);
                 } else if bytes.equal(arg(g, 1), "expand") {
-                    status = run_model(h, i, 1, false, 0 - 1);
+                    status = run_model(h, i, 1, false, 0 - 1, 0, 0, 0, 0);
                 } else if bytes.equal(arg(g, 1), "run") {
                     var relax = false;
                     var limit = 0 - 1;
+                    var onodes = 200000;
+                    var osel = 0;
+                    var obr = 0;
+                    var oexp = 0;
                     var good = true;
                     var a = 2;
                     while a < arg_count(g) && good {
@@ -137,13 +182,29 @@ fn main(world: World) -> [] int {
                         } else if bytes.equal(arg(g, a), "--iteration-limit") && a + 1 < arg_count(g) && parse_count(arg(g, a + 1)) >= 0 {
                             limit = parse_count(arg(g, a + 1));
                             a = a + 1;
+                        } else if bytes.equal(arg(g, a), "--node-limit") && a + 1 < arg_count(g) && parse_count(arg(g, a + 1)) >= 0 {
+                            onodes = parse_count(arg(g, a + 1));
+                            a = a + 1;
+                        } else if bytes.equal(arg(g, a), "--experiment") && a + 1 < arg_count(g) && parse_count(arg(g, a + 1)) >= 0 {
+                            oexp = parse_count(arg(g, a + 1));
+                            a = a + 1;
+                        } else if bytes.equal(arg(g, a), "--node-select") && a + 1 < arg_count(g) && (bytes.equal(arg(g, a + 1), "depth") || bytes.equal(arg(g, a + 1), "best")) {
+                            if bytes.equal(arg(g, a + 1), "best") {
+                                osel = 1;
+                            }
+                            a = a + 1;
+                        } else if bytes.equal(arg(g, a), "--branching") && a + 1 < arg_count(g) && (bytes.equal(arg(g, a + 1), "fractional") || bytes.equal(arg(g, a + 1), "pseudo")) {
+                            if bytes.equal(arg(g, a + 1), "pseudo") {
+                                obr = 1;
+                            }
+                            a = a + 1;
                         } else {
                             good = false;
                         }
                         a = a + 1;
                     }
                     if good {
-                        status = run_model(h, i, 2, relax, limit);
+                        status = run_model(h, i, 2, relax, limit, onodes, osel, obr, oexp);
                     } else {
                         status = usage(h, i);
                     }
