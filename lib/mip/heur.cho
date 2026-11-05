@@ -1,0 +1,66 @@
+edition 7;
+
+module solve.heur;
+
+// Helpers of the improvement heuristics that run between slices of the search (docs/design.md 21.2). Pure functions over the model and slices; no search state.
+
+import solve.layout as l;
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+// The bounds of every column of the checked model into sd[0..n) (lower) and sd[n..2n) (upper), and into ik[j] 1 when column j is integer.
+pub fn col_bounds[&a, &b, &c, &d](ints: &a [int], fl: &b [float], sd: &!c [float], ik: &!d [int], n: int) -> [] int {
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let j = ints[l.sym_base(k)] + off;
+                sd[j] = fl[l.sym_lo(k)];
+                sd[n + j] = fl[l.sym_hi(k)];
+                if ints[l.sym_kind(k)] < 2 {
+                    ik[j] = 1;
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// RINS (Danna, Rothberg, Le Pape 2005): the sub-MIP around an incumbent and an LP point. Writes the bounds of the sub-MIP into out[0..2n): the model's bounds (in lim[0..2n)), except an
+// integer column on which the LP point `g` (g[goff + j]) and the incumbent `inc` agree to 1e-6, which is fixed at the incumbent's value. Returns how many columns it fixed.
+pub fn rins_bounds[&a, &b, &c, &d, &e](ik: &a [int], lim: &b [float], g: &c [float], goff: int, inc: &d [float], out: &!e [float], n: int) -> [] int {
+    var fixed = 0;
+    var j = 0;
+    while j < n {
+        out[j] = lim[j];
+        out[n + j] = lim[n + j];
+        if ik[j] == 1 && mag(g[goff + j] - inc[j]) < 1e-6 {
+            out[j] = inc[j];
+            out[n + j] = inc[j];
+            fixed = fixed + 1;
+        }
+        j = j + 1;
+    }
+    return fixed;
+}
+
+// How many columns are integer.
+pub fn count_int[&a](ik: &a [int], n: int) -> [] int {
+    var c = 0;
+    var j = 0;
+    while j < n {
+        if ik[j] == 1 {
+            c = c + 1;
+        }
+        j = j + 1;
+    }
+    return c;
+}

@@ -1,0 +1,882 @@
+edition 7;
+
+module solve.cmir;
+
+// Mixed-integer-rounding cuts with path aggregation (Marchand and Wolsey), separated from an LP point (docs/design.md 21.2; the reference is scripts/proto_cmir.py).
+//
+// A row `a x <= b` of the model (a `>=` row negated; an equality row used either way) that is tight at the point is taken as the start of an aggregation. Each continuous column is replaced by
+// its nearest bound: its lower bound (s = x - lo), its upper bound (s = hi - x) or its variable upper bound x <= u y (s = u y - x, y an integer column), and each integer column by itself or
+// its complement. When the row has the shape `sum a_j y_j + sum c_k s_k <= b` (y integer, s >= 0; a term c s with c > 0 is dropped, which only weakens it) and `f0 = frac(b / d)` lies in
+// [0.05, 0.95] for a divisor d, the inequality `sum (floor(a_j/d) + max(0, f_j - f0)/(1 - f0)) y_j + sum_{c_k<0} c_k / (d (1 - f0)) s_k <= floor(b / d)` holds for every integer point of the
+// model. If no divisor gives a cut violated by the point and a continuous column sits strictly between its bounds, a tight row with the opposite sign on that column is added to the
+// aggregate (the column cancels) and the attempt is repeated, up to 8 times. Cuts are returned as `<=` rows in a pool; the caller picks and appends them. Nothing here reads a clock
+// or a hash: the same model and point give the same pool.
+//
+// Scratch (the caller allocates it zeroed, sizes by `si_len`, `sf_len`):
+//   si: 0 isint (n), n vub column or -1 (n), 2n touched list (n), 3n mark (n), 4n bound kind of a continuous column (n), 5n list of continuous columns with a negative coefficient (n),
+//       6n list of integer columns (n), 7n mark of integer columns: 1 plus 1 when complemented (n), 8n column starts (n + 1), then the rows of the column index (nnz cap), the positions of
+//       its terms (nnz cap), then 16 used rows, then the pool: PCUT + 1 starts, PNNZ columns.
+//   sf: 0 lower (n), n upper (n), 2n vub ratio (n), 3n aggregate (n), 4n integer coefficients (n), 5n coefficients of the continuous columns (n), 6n the cut under construction (n),
+//       7n activities of the rows (mcap), then 8 divisors, then the pool: PNNZ coefficients, PCUT right sides, PCUT efficacies (squared).
+
+import solve.layout as l;
+
+pub fn pcut() -> [] int {
+    return 800;
+}
+
+pub fn pnnz() -> [] int {
+    return 320000;
+}
+
+pub fn si_len(n: int, nnzcap: int) -> [] int {
+    return 9 * n + 8 + 2 * nnzcap + 16 + 320 + pcut() + 2 + pnnz() + 16;
+}
+
+pub fn sf_len(n: int, mcap: int) -> [] int {
+    return 7 * n + mcap + 8 + pnnz() + 2 * pcut() + 16;
+}
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+fn ffloor(v: float) -> [] float {
+    if v > 1e15 || v < -1e15 {
+        return v;
+    }
+    let t = float_of(truncate(v));
+    if t > v {
+        return t - 1.0;
+    }
+    return t;
+}
+
+fn finite(v: float) -> [] bool {
+    return v > -1e20 && v < 1e20;
+}
+
+// Where things are in the scratch.
+fn o_cs(n: int) -> [] int {
+    return 8 * n;
+}
+
+fn o_crow(n: int) -> [] int {
+    return 8 * n + 1 + n;
+}
+
+fn o_cpos(n: int, nnzcap: int) -> [] int {
+    return 8 * n + 1 + n + nnzcap;
+}
+
+fn o_used(n: int, nnzcap: int) -> [] int {
+    return 8 * n + 1 + n + 2 * nnzcap;
+}
+
+fn o_taken(n: int, nnzcap: int) -> [] int {
+    return o_used(n, nnzcap) + 16;
+}
+
+fn o_ps(n: int, nnzcap: int) -> [] int {
+    return o_taken(n, nnzcap) + 320;
+}
+
+fn o_pc(n: int, nnzcap: int) -> [] int {
+    return o_ps(n, nnzcap) + pcut() + 2;
+}
+
+fn o_fact(n: int, mcap: int) -> [] int {
+    return 7 * n + mcap;
+}
+
+fn o_pf(n: int, mcap: int) -> [] int {
+    return o_fact(n, mcap) + 8;
+}
+
+fn o_prhs(n: int, mcap: int) -> [] int {
+    return o_pf(n, mcap) + pnnz();
+}
+
+fn o_peff(n: int, mcap: int) -> [] int {
+    return o_prhs(n, mcap) + pcut();
+}
+
+// The column data: integer flags, bounds, and the variable upper bound of each continuous column (a row `p x - q y <= 0` with x continuous, y integer and y >= 0 gives x <= (q / p) y).
+pub fn colinfo[&a, &b, &c, &d](ints: &a [int], fl: &b [float], si: &!c [int], sf: &!d [float], n: int) -> [] int {
+    var k = 0;
+    while k < ints[l.h_nsym()] {
+        if ints[l.sym_class(k)] == 1 {
+            var off = 0;
+            while off < ints[l.sym_size(k)] {
+                let j = ints[l.sym_base(k)] + off;
+                sf[j] = fl[l.sym_lo(k)];
+                sf[n + j] = fl[l.sym_hi(k)];
+                si[n + j] = 0 - 1;
+                if ints[l.sym_kind(k)] < 2 {
+                    si[j] = 1;
+                }
+                off = off + 1;
+            }
+        }
+        k = k + 1;
+    }
+    let m = ints[l.h_ncons()];
+    var r = 0;
+    while r < m {
+        let s = ints[l.row_start(r)];
+        let sense = ints[l.row_sense(r)];
+        if ints[l.row_start(r + 1)] - s == 2 && sense != 2 && mag(fl[l.row_rhs(r)]) < 1e-12 {
+            var sg = 1.0;
+            if sense == 1 {
+                sg = 0.0 - 1.0;
+            }
+            let j1 = ints[l.term_col(s)];
+            let a1 = sg * fl[l.term_coef(s)];
+            let j2 = ints[l.term_col(s + 1)];
+            let a2 = sg * fl[l.term_coef(s + 1)];
+            note_vub(si, sf, n, j1, a1, j2, 0.0 - a2);
+            note_vub(si, sf, n, j2, a2, j1, 0.0 - a1);
+        }
+        r = r + 1;
+    }
+    return 0;
+}
+
+fn note_vub[&a, &b](si: &!a [int], sf: &!b [float], n: int, x: int, p: float, y: int, q: float) -> [] int {
+    if x != y && si[x] == 0 && si[y] == 1 && p > 0.0 && q > 0.0 && sf[y] >= 0.0 {
+        let c = q / p;
+        if si[n + x] < 0 || c < sf[2 * n + x] {
+            si[n + x] = y;
+            sf[2 * n + x] = c;
+        }
+    }
+    return 0;
+}
+
+// The column index of the rows (CSC) and the activity of each row at the point x.
+fn index_rows[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], si: &!c [int], sf: &!d [float], x: &e [float], n: int, nnzcap: int, mcap: int) -> [] int {
+    let m = ints[l.h_ncons()];
+    let cs = o_cs(n);
+    let cr = o_crow(n);
+    let cp = o_cpos(n, nnzcap);
+    var j = 0;
+    while j <= n {
+        si[cs + j] = 0;
+        j = j + 1;
+    }
+    var r = 0;
+    while r < m {
+        var act = 0.0;
+        var t = ints[l.row_start(r)];
+        while t < ints[l.row_start(r + 1)] {
+            let jj = ints[l.term_col(t)];
+            si[cs + jj + 1] = si[cs + jj + 1] + 1;
+            act = act + fl[l.term_coef(t)] * x[jj];
+            t = t + 1;
+        }
+        sf[7 * n + r] = act;
+        r = r + 1;
+    }
+    j = 0;
+    while j < n {
+        si[cs + j + 1] = si[cs + j + 1] + si[cs + j];
+        j = j + 1;
+    }
+    // fill: use the mark area (3n) as a cursor per column
+    j = 0;
+    while j < n {
+        si[3 * n + j] = si[cs + j];
+        j = j + 1;
+    }
+    r = 0;
+    while r < m {
+        var t = ints[l.row_start(r)];
+        while t < ints[l.row_start(r + 1)] {
+            let jj = ints[l.term_col(t)];
+            let at = si[3 * n + jj];
+            si[cr + at] = r;
+            si[cp + at] = t;
+            si[3 * n + jj] = at + 1;
+            t = t + 1;
+        }
+        r = r + 1;
+    }
+    j = 0;
+    while j < n {
+        si[3 * n + j] = 0;
+        j = j + 1;
+    }
+    return m;
+}
+
+// How far from its nearest bound a continuous column sits at x (its lower bound, its upper bound or its variable upper bound).
+fn gap[&a, &b, &c](si: &a [int], sf: &b [float], x: &c [float], n: int, j: int) -> [] float {
+    var g = 1e18;
+    if finite(sf[j]) {
+        g = x[j] - sf[j];
+    }
+    if finite(sf[n + j]) && sf[n + j] - x[j] < g {
+        g = sf[n + j] - x[j];
+    }
+    if si[n + j] >= 0 {
+        let v = sf[2 * n + j] * x[si[n + j]] - x[j];
+        if v < g {
+            g = v;
+        }
+    }
+    return g;
+}
+
+// The slack of row r in the orientation sg (+1: a x <= b, -1: -a x <= -b) at the point, or 1e18 when the row has no such orientation.
+fn row_slack[&a, &b, &c](ints: &a [int], fl: &b [float], sf: &c [float], n: int, r: int, sg: int) -> [] float {
+    let s = ints[l.row_sense(r)];
+    let act = sf[7 * n + r];
+    let rhs = fl[l.row_rhs(r)];
+    if sg > 0 && s != 1 {
+        return rhs - act;
+    }
+    if sg < 0 && s != 0 {
+        return act - rhs;
+    }
+    return 1e18;
+}
+
+// Whether row r has an integer column away from a whole number at the point, or a continuous column away from all its bounds or tied to such an integer column by a variable upper bound: the rows worth starting an aggregation from.
+fn has_fractional[&a, &b, &c, &d](ints: &a [int], si: &b [int], sf: &c [float], x: &d [float], n: int, r: int) -> [] bool {
+    var t = ints[l.row_start(r)];
+    while t < ints[l.row_start(r + 1)] {
+        let j = ints[l.term_col(t)];
+        if si[j] == 1 {
+            let f = x[j] - ffloor(x[j]);
+            if f > 1e-6 && f < 1.0 - 1e-6 {
+                return true;
+            }
+        } else {
+            if gap(si, sf, x, n, j) > 1e-6 {
+                return true;
+            }
+            if si[n + j] >= 0 {
+                let f2 = x[si[n + j]] - ffloor(x[si[n + j]]);
+                if f2 > 1e-6 && f2 < 1.0 - 1e-6 {
+                    return true;
+                }
+            }
+        }
+        t = t + 1;
+    }
+    return false;
+}
+
+// Tries the MIR inequality on the aggregate (sf[3n + j] for the columns in the touched list si[2n ..], nt of them; right side bg). If a violated cut is found it is appended to the pool and
+// 1 is returned. The scratch lists and arrays it uses are cleared before it returns.
+fn mir_try[&a, &c, &d, &e](ints: &a [int], si: &!c [int], sf: &!d [float], x: &e [float], n: int, nt: int, bg: float, nnzcap: int, mcap: int, npool: int) -> [] int {
+    let il = 6 * n;
+    let nl = 5 * n;
+    var rhs2 = bg;
+    var ni = 0;
+    var nn = 0;
+    var ok = true;
+    var t = 0;
+    while t < nt && ok {
+        let j = si[2 * n + t];
+        let a = sf[3 * n + j];
+        if mag(a) >= 1e-12 {
+            if si[j] == 1 {
+                if si[7 * n + j] == 0 {
+                    si[7 * n + j] = 1;
+                    si[il + ni] = j;
+                    ni = ni + 1;
+                }
+                sf[4 * n + j] = sf[4 * n + j] + a;
+            } else {
+                var kind = 0;
+                var best = 1e18;
+                if finite(sf[j]) {
+                    best = x[j] - sf[j];
+                    kind = 1;
+                }
+                if finite(sf[n + j]) && sf[n + j] - x[j] < best {
+                    best = sf[n + j] - x[j];
+                    kind = 2;
+                }
+                if si[n + j] >= 0 {
+                    let v = sf[2 * n + j] * x[si[n + j]] - x[j];
+                    if v < best {
+                        best = v;
+                        kind = 3;
+                    }
+                }
+                var cs = 0.0;
+                if kind == 1 {
+                    rhs2 = rhs2 - a * sf[j];
+                    cs = a;
+                } else if kind == 2 {
+                    rhs2 = rhs2 - a * sf[n + j];
+                    cs = 0.0 - a;
+                } else if kind == 3 {
+                    let y = si[n + j];
+                    if si[7 * n + y] == 0 {
+                        si[7 * n + y] = 1;
+                        si[il + ni] = y;
+                        ni = ni + 1;
+                    }
+                    sf[4 * n + y] = sf[4 * n + y] + a * sf[2 * n + j];
+                    cs = 0.0 - a;
+                } else {
+                    ok = false;
+                }
+                if ok && cs < 0.0 {
+                    si[4 * n + j] = kind;
+                    sf[5 * n + j] = cs;
+                    si[nl + nn] = j;
+                    nn = nn + 1;
+                }
+            }
+        }
+        t = t + 1;
+    }
+    // integer columns: whole bounds, complemented at the nearer bound
+    var q = 0;
+    while q < ni && ok {
+        let y = si[il + q];
+        let a = sf[4 * n + y];
+        let lo = sf[y];
+        let hi = sf[n + y];
+        if (finite(lo) && lo != ffloor(lo)) || (finite(hi) && hi != ffloor(hi)) || (!finite(lo) && !finite(hi)) {
+            ok = false;
+        } else {
+            var comp = false;
+            if !finite(lo) {
+                comp = true;
+            } else if finite(hi) && x[y] > 0.5 * (lo + hi) {
+                comp = true;
+            }
+            if comp {
+                rhs2 = rhs2 - a * hi;
+                sf[4 * n + y] = 0.0 - a;
+                si[7 * n + y] = 2;
+            } else {
+                rhs2 = rhs2 - a * lo;
+            }
+        }
+        q = q + 1;
+    }
+    var added = 0;
+    if ok && ni > 0 {
+        // candidate divisors: the 6 smallest distinct |a_j| of integer columns strictly inside their range, else of all of them
+        let fd = o_fact(n, mcap);
+        var nc = 0;
+        var pass = 0;
+        while pass < 2 && nc == 0 {
+            q = 0;
+            while q < ni {
+                let y = si[il + q];
+                let a = mag(sf[4 * n + y]);
+                var take = a > 1e-9;
+                if take && pass == 0 {
+                    var ylen = x[y] - sf[y];
+                    if si[7 * n + y] == 2 {
+                        ylen = sf[n + y] - x[y];
+                    }
+                    if !(ylen > 1e-6 && ylen < sf[n + y] - sf[y] - 1e-6) {
+                        take = false;
+                    }
+                }
+                if take {
+                    // insert into the sorted list of at most 6 distinct values
+                    var dup = false;
+                    var at = 0;
+                    while at < nc {
+                        if mag(sf[fd + at] - a) < 1e-12 {
+                            dup = true;
+                        }
+                        at = at + 1;
+                    }
+                    if !dup {
+                        var pos = nc;
+                        while pos > 0 && sf[fd + pos - 1] > a {
+                            if pos < 6 {
+                                sf[fd + pos] = sf[fd + pos - 1];
+                            }
+                            pos = pos - 1;
+                        }
+                        if pos < 6 {
+                            sf[fd + pos] = a;
+                            if nc < 6 {
+                                nc = nc + 1;
+                            }
+                        }
+                    }
+                }
+                q = q + 1;
+            }
+            pass = pass + 1;
+        }
+        var bd = 0.0;
+        var beff = 0.0;
+        var bb = 0.0;
+        var bset = false;
+        var c0 = 0;
+        while c0 < nc {
+            var div = 1.0;
+            var dv = 0;
+            while dv < 4 {
+                let d = sf[fd + c0] / div;
+                let bq = rhs2 / d;
+                let rb = ffloor(bq + 1e-9);
+                let f0 = bq - rb;
+                if f0 >= 0.05 && f0 <= 0.95 {
+                    var lhs = 0.0;
+                    var sq = 0.0;
+                    q = 0;
+                    while q < ni {
+                        let y = si[il + q];
+                        let aj = sf[4 * n + y] / d;
+                        let fl2 = ffloor(aj + 1e-9);
+                        var fj = aj - fl2;
+                        fj = fj - f0;
+                        if fj < 0.0 {
+                            fj = 0.0;
+                        }
+                        let cy = fl2 + fj / (1.0 - f0);
+                        var ylen = x[y] - sf[y];
+                        if si[7 * n + y] == 2 {
+                            ylen = sf[n + y] - x[y];
+                        }
+                        lhs = lhs + cy * ylen;
+                        sq = sq + cy * cy;
+                        q = q + 1;
+                    }
+                    q = 0;
+                    while q < nn {
+                        let j = si[nl + q];
+                        let cv = sf[5 * n + j] / (d * (1.0 - f0));
+                        var sv = x[j] - sf[j];
+                        if si[4 * n + j] == 2 {
+                            sv = sf[n + j] - x[j];
+                        } else if si[4 * n + j] == 3 {
+                            sv = sf[2 * n + j] * x[si[n + j]] - x[j];
+                        }
+                        lhs = lhs + cv * sv;
+                        sq = sq + cv * cv;
+                        q = q + 1;
+                    }
+                    let viol = lhs - rb;
+                    if viol > 1e-5 && sq > 1e-18 {
+                        let eff = viol * viol / sq;
+                        if !bset || eff > beff {
+                            bset = true;
+                            beff = eff;
+                            bd = d;
+                            bb = rb;
+                        }
+                    }
+                }
+                div = div * 2.0;
+                dv = dv + 1;
+            }
+            c0 = c0 + 1;
+        }
+        if bset && npool < pcut() {
+            added = emit(ints, si, sf, x, n, ni, nn, bd, bb, rhs2, nnzcap, mcap, npool);
+        }
+    }
+    // clear
+    q = 0;
+    while q < ni {
+        let y = si[il + q];
+        si[7 * n + y] = 0;
+        sf[4 * n + y] = 0.0;
+        q = q + 1;
+    }
+    q = 0;
+    while q < nn {
+        let j = si[nl + q];
+        si[4 * n + j] = 0;
+        sf[5 * n + j] = 0.0;
+        q = q + 1;
+    }
+    return added;
+}
+
+// Builds the chosen cut in the space of the model's columns and appends it to the pool when it is violated, short and well scaled. Returns 1 when appended.
+fn emit[&a, &c, &d, &e](ints: &a [int], si: &!c [int], sf: &!d [float], x: &e [float], n: int, ni: int, nn: int, dl: float, rb: float, rhs2: float, nnzcap: int, mcap: int, npool: int) -> [] int {
+    let il = 6 * n;
+    let nl = 5 * n;
+    let bq = rhs2 / dl;
+    let f0 = bq - ffloor(bq + 1e-9);
+    var rh = rb;
+    var q = 0;
+    while q < ni {
+        let y = si[il + q];
+        let aj = sf[4 * n + y] / dl;
+        let fl2 = ffloor(aj + 1e-9);
+        var fj = aj - fl2 - f0;
+        if fj < 0.0 {
+            fj = 0.0;
+        }
+        let cy = fl2 + fj / (1.0 - f0);
+        if si[7 * n + y] == 2 {
+            rh = rh - cy * sf[n + y];
+            sf[6 * n + y] = sf[6 * n + y] - cy;
+        } else {
+            rh = rh + cy * sf[y];
+            sf[6 * n + y] = sf[6 * n + y] + cy;
+        }
+        q = q + 1;
+    }
+    q = 0;
+    while q < nn {
+        let j = si[nl + q];
+        let cv = sf[5 * n + j] / (dl * (1.0 - f0));
+        let kind = si[4 * n + j];
+        if kind == 1 {
+            sf[6 * n + j] = sf[6 * n + j] + cv;
+            rh = rh + cv * sf[j];
+        } else if kind == 2 {
+            sf[6 * n + j] = sf[6 * n + j] - cv;
+            rh = rh - cv * sf[n + j];
+        } else {
+            let y = si[n + j];
+            sf[6 * n + y] = sf[6 * n + y] + cv * sf[2 * n + j];
+            sf[6 * n + j] = sf[6 * n + j] - cv;
+        }
+        q = q + 1;
+    }
+    // collect the nonzeros (each column once: set to zero after it is read)
+    let ps = o_ps(n, nnzcap);
+    let pc = o_pc(n, nnzcap);
+    let pf = o_pf(n, mcap);
+    var at = si[ps + npool];
+    let start = at;
+    var lhs = 0.0;
+    var sq = 0.0;
+    var cmax = 0.0;
+    var cmin = 1e300;
+    var ok = true;
+    var pass = 0;
+    while pass < 2 {
+        q = 0;
+        let cnt = nn;
+        var total = cnt;
+        if pass == 0 {
+            total = ni;
+        }
+        while q < total {
+            var j = si[nl + q];
+            if pass == 0 {
+                j = si[il + q];
+            }
+            let cv = sf[6 * n + j];
+            if mag(cv) > 1e-12 {
+                if at + 1 > pnnz() || at - start >= 400 {
+                    ok = false;
+                } else {
+                    si[pc + at] = j;
+                    sf[pf + at] = cv;
+                    at = at + 1;
+                    lhs = lhs + cv * x[j];
+                    sq = sq + cv * cv;
+                    if mag(cv) > cmax {
+                        cmax = mag(cv);
+                    }
+                    if mag(cv) < cmin {
+                        cmin = mag(cv);
+                    }
+                }
+            }
+            sf[6 * n + j] = 0.0;
+            q = q + 1;
+        }
+        pass = pass + 1;
+    }
+    let viol = lhs - rh;
+    if !ok || at - start < 1 || viol <= 1e-5 || sq <= 1e-18 || viol * viol / sq < 1e-12 || cmax > 1e6 * cmin {
+        return 0;
+    }
+    si[ps + npool + 1] = at;
+    sf[o_prhs(n, mcap) + npool] = rh;
+    sf[o_peff(n, mcap) + npool] = viol * viol / sq;
+    return 1;
+}
+
+// One round of separation at the point x of the model (ints, fl) with n columns and mcap the capacity of its rows: fills the pool and returns how many cuts it holds. `nnzcap` is the
+// capacity of the column index (the model's nonzeros plus the room for the cuts the caller may add before the next round). `rot` rotates the first row tried, so that successive rounds
+// do not all start from the same rows.
+pub fn separate[&a, &b, &c, &d, &e](ints: &a [int], fl: &b [float], si: &!c [int], sf: &!d [float], x: &e [float], n: int, nnzcap: int, mcap: int, rot: int) -> [] int {
+    let m = index_rows(ints, fl, si, sf, x, n, nnzcap, mcap);
+    let cs = o_cs(n);
+    let cr = o_crow(n);
+    let cp = o_cpos(n, nnzcap);
+    let us = o_used(n, nnzcap);
+    let ps = o_ps(n, nnzcap);
+    var npool = 0;
+    si[ps] = 0;
+    var starts = 0;
+    var step = 0;
+    while step < m && starts < 800 && npool < pcut() {
+        let r = (step + rot) % m;
+        step = step + 1;
+        var osg = 0;
+        while osg < 2 {
+            var sg = 1;
+            if osg == 1 {
+                sg = 0 - 1;
+            }
+            osg = osg + 1;
+            let rhs0 = fl[l.row_rhs(r)];
+            let tol = 1e-6 * (1.0 + mag(rhs0));
+            if row_slack(ints, fl, sf, n, r, sg) <= tol && npool < pcut() && has_fractional(ints, si, sf, x, n, r) {
+                starts = starts + 1;
+                // aggregate = the row in this orientation
+                var nt = 0;
+                var fsg = 1.0;
+                if sg < 0 {
+                    fsg = 0.0 - 1.0;
+                }
+                var t = ints[l.row_start(r)];
+                while t < ints[l.row_start(r + 1)] {
+                    let j = ints[l.term_col(t)];
+                    if si[3 * n + j] == 0 {
+                        si[3 * n + j] = 1;
+                        si[2 * n + nt] = j;
+                        nt = nt + 1;
+                    }
+                    sf[3 * n + j] = sf[3 * n + j] + fsg * fl[l.term_coef(t)];
+                    t = t + 1;
+                }
+                var bg = fsg * rhs0;
+                var nused = 1;
+                si[us] = r;
+                var attempt = 0;
+                var done = false;
+                while attempt < 9 && !done {
+                    let got = mir_try(ints, si, sf, x, n, nt, bg, nnzcap, mcap, npool);
+                    if got == 1 {
+                        npool = npool + 1;
+                        done = true;
+                    } else if attempt < 8 {
+                        // the continuous column farthest from its bounds
+                        var bj = 0 - 1;
+                        var bgap = 1e-6;
+                        var u = 0;
+                        while u < nt {
+                            let j = si[2 * n + u];
+                            if si[j] == 0 && mag(sf[3 * n + j]) > 1e-12 {
+                                let g = gap(si, sf, x, n, j);
+                                if g > bgap {
+                                    bgap = g;
+                                    bj = j;
+                                }
+                            }
+                            u = u + 1;
+                        }
+                        if bj < 0 {
+                            done = true;
+                        } else {
+                            // the first tight row (lowest index) with the opposite sign on bj that is not used yet
+                            var pick = 0 - 1;
+                            var psg = 1;
+                            var pc2 = 0.0;
+                            var at = si[cs + bj];
+                            while at < si[cs + bj + 1] && pick < 0 {
+                                let k = si[cr + at];
+                                let ck = fl[l.term_coef(si[cp + at])];
+                                var usedk = false;
+                                var w = 0;
+                                while w < nused {
+                                    if si[us + w] == k {
+                                        usedk = true;
+                                    }
+                                    w = w + 1;
+                                }
+                                if !usedk && mag(ck) > 1e-9 {
+                                    var o2 = 0;
+                                    while o2 < 2 && pick < 0 {
+                                        var sg2 = 1;
+                                        if o2 == 1 {
+                                            sg2 = 0 - 1;
+                                        }
+                                        o2 = o2 + 1;
+                                        let eff = float_of(sg2) * ck;
+                                        let tolk = 1e-6 * (1.0 + mag(fl[l.row_rhs(k)]));
+                                        if eff * sf[3 * n + bj] < 0.0 && row_slack(ints, fl, sf, n, k, sg2) <= tolk {
+                                            pick = k;
+                                            psg = sg2;
+                                            pc2 = eff;
+                                        }
+                                    }
+                                }
+                                at = at + 1;
+                            }
+                            if pick < 0 || nused >= 16 {
+                                done = true;
+                            } else {
+                                let mult = (0.0 - sf[3 * n + bj]) / pc2;
+                                var fs2 = 1.0;
+                                if psg < 0 {
+                                    fs2 = 0.0 - 1.0;
+                                }
+                                var t2 = ints[l.row_start(pick)];
+                                while t2 < ints[l.row_start(pick + 1)] {
+                                    let j = ints[l.term_col(t2)];
+                                    if si[3 * n + j] == 0 {
+                                        si[3 * n + j] = 1;
+                                        si[2 * n + nt] = j;
+                                        nt = nt + 1;
+                                    }
+                                    sf[3 * n + j] = sf[3 * n + j] + mult * fs2 * fl[l.term_coef(t2)];
+                                    t2 = t2 + 1;
+                                }
+                                sf[3 * n + bj] = 0.0;
+                                bg = bg + mult * fs2 * fl[l.row_rhs(pick)];
+                                si[us + nused] = pick;
+                                nused = nused + 1;
+                            }
+                        }
+                    } else {
+                        done = true;
+                    }
+                    attempt = attempt + 1;
+                }
+                var z = 0;
+                while z < nt {
+                    let j = si[2 * n + z];
+                    sf[3 * n + j] = 0.0;
+                    si[3 * n + j] = 0;
+                    z = z + 1;
+                }
+            }
+        }
+    }
+    return npool;
+}
+
+// The index of the pool's cut with the greatest efficacy among those not yet looked at (looked-at ones carry -1), skipping a cut that is nearly parallel (cosine over 0.9 in absolute value)
+// to one of the `ntaken` cuts already taken this round (their pool indices are in the scratch); -1 when none is left.
+pub fn best_cut[&c, &d](si: &!c [int], sf: &!d [float], n: int, nnzcap: int, mcap: int, npool: int, ntaken: int) -> [] int {
+    let pe = o_peff(n, mcap);
+    let ps = o_ps(n, nnzcap);
+    let pc = o_pc(n, nnzcap);
+    let pf = o_pf(n, mcap);
+    let tk = o_taken(n, nnzcap);
+    var found = 0 - 1;
+    while found < 0 {
+        var best = 0 - 1;
+        var be = 0.0;
+        var k = 0;
+        while k < npool {
+            if sf[pe + k] > be {
+                be = sf[pe + k];
+                best = k;
+            }
+            k = k + 1;
+        }
+        if best < 0 {
+            return 0 - 1;
+        }
+        sf[pe + best] = 0.0 - 1.0;
+        // dense copy of the candidate
+        var nb = 0.0;
+        var t = si[ps + best];
+        while t < si[ps + best + 1] {
+            sf[6 * n + si[pc + t]] = sf[pf + t];
+            nb = nb + sf[pf + t] * sf[pf + t];
+            t = t + 1;
+        }
+        var par = false;
+        var q = 0;
+        while q < ntaken && !par {
+            let o = si[tk + q];
+            var dot = 0.0;
+            var na = 0.0;
+            var u = si[ps + o];
+            while u < si[ps + o + 1] {
+                dot = dot + sf[pf + u] * sf[6 * n + si[pc + u]];
+                na = na + sf[pf + u] * sf[pf + u];
+                u = u + 1;
+            }
+            if dot * dot > 0.81 * na * nb {
+                par = true;
+            }
+            q = q + 1;
+        }
+        t = si[ps + best];
+        while t < si[ps + best + 1] {
+            sf[6 * n + si[pc + t]] = 0.0;
+            t = t + 1;
+        }
+        if !par {
+            found = best;
+        }
+    }
+    return found;
+}
+
+// Appends pool cut k as a `<=` row at the end of the model (ints2, fl2); returns 1 when it fitted (rows and nonzeros under the layout's limits), else 0.
+pub fn note_taken[&a](si: &!a [int], n: int, nnzcap: int, ntaken: int, k: int) -> [] int {
+    si[o_taken(n, nnzcap) + ntaken] = k;
+    return 0;
+}
+
+pub fn append[&b, &c, &d, &e](ints2: &!b [int], fl2: &!c [float], si: &d [int], sf: &e [float], n: int, nnzcap: int, mcap: int, k: int) -> [] int {
+    let ps = o_ps(n, nnzcap);
+    let pc = o_pc(n, nnzcap);
+    let m = ints2[l.h_ncons()];
+    let nnz = ints2[l.row_start(m)];
+    let len = si[ps + k + 1] - si[ps + k];
+    if m + 1 > l.maxrows() || m + 1 > mcap || nnz + len > l.maxnz() {
+        return 0;
+    }
+    var i = 0;
+    while i < len {
+        ints2[l.term_col(nnz + i)] = si[pc + si[ps + k] + i];
+        fl2[l.term_coef(nnz + i)] = sf[o_pf(n, mcap) + si[ps + k] + i];
+        i = i + 1;
+    }
+    ints2[l.row_start(m + 1)] = nnz + len;
+    ints2[l.row_sense(m)] = 0;
+    fl2[l.row_rhs(m)] = sf[o_prhs(n, mcap) + k];
+    ints2[l.h_ncons()] = m + 1;
+    ints2[l.h_nnz()] = nnz + len;
+    return 1;
+}
+
+// Drops the cut rows from m0 on that are not tight at the point x (an optimal point of the LP with all of them: it stays optimal without the others). Returns the rows kept (m0 on).
+pub fn purge[&a, &b, &c](ints2: &!a [int], fl2: &!b [float], x: &c [float], m0: int) -> [] int {
+    let m = ints2[l.h_ncons()];
+    var w = m0;
+    var nnz = ints2[l.row_start(m0)];
+    var r = m0;
+    while r < m {
+        let s = ints2[l.row_start(r)];
+        let e = ints2[l.row_start(r + 1)];
+        var act = 0.0;
+        var t = s;
+        while t < e {
+            act = act + fl2[l.term_coef(t)] * x[ints2[l.term_col(t)]];
+            t = t + 1;
+        }
+        let rhs = fl2[l.row_rhs(r)];
+        if rhs - act <= 1e-6 * (1.0 + mag(rhs)) {
+            t = s;
+            while t < e {
+                ints2[l.term_col(nnz + t - s)] = ints2[l.term_col(t)];
+                fl2[l.term_coef(nnz + t - s)] = fl2[l.term_coef(t)];
+                t = t + 1;
+            }
+            ints2[l.row_sense(w)] = 0;
+            fl2[l.row_rhs(w)] = rhs;
+            nnz = nnz + e - s;
+            ints2[l.row_start(w + 1)] = nnz;
+            w = w + 1;
+        }
+        r = r + 1;
+    }
+    ints2[l.h_ncons()] = w;
+    ints2[l.h_nnz()] = nnz;
+    return w - m0;
+}

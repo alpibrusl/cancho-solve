@@ -46,6 +46,9 @@ python3 scripts/check_nodes.py        # exact node and iteration counts of the s
 python3 scripts/check_mip_engines.py  # the dense and the sparse LP engine of the search agree (design.md 19.6)
 python3 scripts/check_cuts.py          # implied cuts through variable upper bounds never change an answer (design.md 19.8; needs scipy)
 CANCHO=... python3 scripts/mutants_cuts.py # deliberate changes to the cut code; every one must be killed or explained (design.md 19.8)
+python3 scripts/check_mir.py          # MIR cuts with path aggregation and the RINS driver never change an answer, and do what is claimed (design.md 21.2; needs scipy)
+CANCHO=... JOBS=4 python3 scripts/mutants_cmir.py # deliberate changes to lib/mip/cmir.cho and the driver; every one must be killed or explained (design.md 21.3)
+python3 scripts/proto_cmir.py ev:12:12 # the numpy prototype of the MIR cuts: bound after rounds against HiGHS's optimum (design.md 21.2)
 python3 scripts/check_verify.py       # `solve verify` accepts what is feasible and refuses faults with the right tag (design.md section 20; needs scipy)
 CANCHO=... python3 scripts/mutants_verify.py # deliberate changes to the verifier; every one must be killed or explained (design.md 20.6)
 python3 scripts/bench_highs.py        # time against HiGHS: docs/design.md sections 15 and 17
