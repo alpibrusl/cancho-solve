@@ -35,6 +35,7 @@ for path in sorted(glob.glob("tests/mip/*.sol")):
     args = re.search(r"//~ ARGS (.*)", text)
     nodes = re.search(r"//~ NODES (\d+)", text)
     ext = re.search(r"//~ EXIT (\d+)", text)
+    lim = re.search(r"//~ LIMIT (\S+)", text)
     p, _ = run_solve(SOLVE, ["run"] + (args.group(1).split() if args else []), text)
     n_hand += 1
     want_exit = int(ext.group(1)) if ext else 0
@@ -49,10 +50,12 @@ for path in sorted(glob.glob("tests/mip/*.sol")):
         fail(f"{path}: objective {got['objective']}, wanted {exp.group(2)}")
     if nodes and got["stats"]["nodes"] != int(nodes.group(1)):
         fail(f"{path}: {got['stats']['nodes']} nodes, wanted {nodes.group(1)}")
+    if lim and got.get("limit") != lim.group(1):
+        fail(f"{path}: limit {got.get('limit')}, wanted {lim.group(1)}")
     if got["status"] in ("optimal", "feasible"):
         if not got.get("verified"):
             fail(f"{path}: verified is false")
-    if got["status"] in ("feasible", "unknown") and "bound" not in got:
+    if got["status"] in ("feasible", "unknown") and "bound" not in got and "iteration-limit 0" not in (args.group(1) if args else ""):
         fail(f"{path}: a limited run prints no bound")
 
 # ---- 2. generated instances

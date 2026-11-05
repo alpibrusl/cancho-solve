@@ -520,7 +520,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = json.begin_array(heap, w);
     w = command(heap, w, "check", "read a .sol model and check it", "a .sol model", "status, class (LP or MIP), sizes and objective sense");
     w = command(heap, w, "expand", "read a .sol model and print the expanded flat model", "a .sol model", "the flat model as JSON: variables, objective, constraints");
-    w = command(heap, w, "run", "solve the linear program of a .sol model (flags: --relax, --iteration-limit N)", "a .sol model", "status, objective, x by name, stats, verified");
+    w = command(heap, w, "run", "solve a .sol model: its LP, or by branch and bound when it has integer variables (flags: --relax, --iteration-limit N, --node-limit N, --node-select depth|best, --branching fractional|pseudo)", "a .sol model", "status (optimal, infeasible, feasible, unknown), objective, bound and gap when a limit stopped the search, x by name, stats, verified");
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
     w = json.end_array(heap, w);
@@ -529,7 +529,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = json.put_key(heap, w, "0");
     w = json.put_string(heap, w, "the model is accepted");
     w = json.put_key(heap, w, "1");
-    w = json.put_string(heap, w, "run stopped at a limit; status is unknown");
+    w = json.put_string(heap, w, "run stopped at a limit (status feasible or unknown)");
     w = json.put_key(heap, w, "2");
     w = json.put_string(heap, w, "a refusal: standard error holds {error, message, repair, at}");
     w = json.end_object(heap, w);
@@ -554,7 +554,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
 
 pub fn skill[&i](io: &!i Io) -> [io_write] int {
     io.write_all(io, "# solve: writing a model\n\n");
-    io.write_all(io, "`solve check < model.sol` checks a model; `solve expand < model.sol` prints it flat as JSON; `solve run [--relax] < model.sol` solves its linear program (integer variables need --relax until the MIP solver exists). A refusal is JSON on standard error with a rule tag and a position.\n\n");
+    io.write_all(io, "`solve check < model.sol` checks a model; `solve expand < model.sol` prints it flat as JSON; `solve run [--relax] < model.sol` solves it: the LP, or by branch and bound when it has bool/int variables (`--relax` solves the relaxation; `--node-limit N` and `--iteration-limit N` bound the search and give status feasible or unknown with a bound and gap). A refusal is JSON on standard error with a rule tag and a position.\n\n");
     io.write_all(io, "param n = 4;                       // a number, or [1, 2, 3] for an array (0-based)\n");
     io.write_all(io, "var x[0..n] : bool;                // or: int LO..HI, real LO..HI; one or two index ranges, half-open\n");
     io.write_all(io, "maximize total: sum i in 0..n: v[i] * x[i];   // a sum's body is one term; parenthesise a longer one\n");
