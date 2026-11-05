@@ -4,7 +4,7 @@ against it; a mutant is killed when a gate fails. Needs CANCHO=the compiler. Usa
 import os, shutil, subprocess, sys, tempfile
 
 CANCHO = os.environ["CANCHO"]
-SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "lib/mip/lpeng.cho", "lib/mip/mip.cho", "lib/mip/cuts.cho", "lib/verify/verify.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
+SRC = ["lib/model/layout.cho", "lib/model/lex.cho", "lib/model/expr.cho", "lib/model/stmt.cho", "lib/lp/simplex.cho", "lib/lp/sparse.cho", "lib/lp/revised.cho", "lib/mip/lpeng.cho", "lib/mip/mip.cho", "lib/mip/cuts.cho", "lib/mip/cmir.cho", "lib/mip/heur.cho", "lib/verify/verify.cho", "tools/solve/emit.cho", "tools/solve/main.cho"]
 
 # (file, old, new, what it breaks)
 MUTANTS = [

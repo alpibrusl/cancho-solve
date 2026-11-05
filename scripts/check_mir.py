@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gate 8 (docs/design.md 21.2): the MIR cuts with path aggregation and the RINS driver never change an answer, and they do what is claimed. Written before lib/mip/cmir.cho; it must fail on
 a build without them (the effect table, the node counts and G3's `prof` reading do) and on a build whose cuts are wrong (G1).
-G1 validity: generated tight and ample EV models, facility-location models, 60 random big-M models (`mixed`), 24 random mixed-integer models with general integers, equalities and negative
+G1 validity (with the defaults and with the cuts built before the search, `--experiment 256`; the number of cuts found and kept by the second is held exactly): generated tight and ample EV models, facility-location models, 60 random big-M models (`mixed`), 24 random mixed-integer models with general integers, equalities and negative
    coefficients (lpgen.random_mip) and knapsacks and set covers (lpgen): status and optimal value with the defaults equal HiGHS's to 1e-6 relative, and also those without MIR cuts and without
    the driver (`--experiment 96`) when that search finishes; the incumbent passes `solve verify`.
 G2 effect: the root bound (`--node-limit 1`; with the cuts `--node-limit 301`, since they are added after the first 300 nodes, 21.2) of the tight EV models 6x8, 8x10, 10x12 and 12x12 rises to the optimum, exactly (table EFFECT below, re-measured on purpose), the bound without MIR
@@ -39,22 +39,30 @@ def agree(a, b):
     return a is not None and b is not None and abs(a - b) <= 1e-6 * (1 + abs(b))
 
 
+FOUND = KEPT = 0     # cuts found and kept by the eager rounds on the validity instances (held exactly below)
+
+
 def validity(name, text):
-    global checks
+    """The defaults and the eager rounds (experiment bit 256: the cuts are built before the search, so that models of fewer than 300 nodes use them) against HiGHS."""
+    global checks, FOUND, KEPT
     checks += 1
     new, _ = solve(text)
-    if new["status"] in ("feasible", "unknown"):
+    eager, _ = solve(text, ["--experiment", "384"])    # 256 eager + 128 profile
+    if new["status"] in ("feasible", "unknown") or eager["status"] in ("feasible", "unknown"):
         skipped.append(name)
         return new
+    FOUND += eager["stats"]["prof"][67]
+    KEPT += eager["stats"]["prof"][68]
     hs, hv = highs(text)
-    ok = new["status"] == hs
+    ok = new["status"] == hs and eager["status"] == hs
     if ok and hs == "optimal":
-        ok = agree(new["objective"], hv) and sh(["verify"], text + "---\n" + json.dumps(new)).returncode == 0
+        ok = agree(new["objective"], hv) and agree(eager["objective"], hv)
+        ok = ok and sh(["verify"], text + "---\n" + json.dumps(new)).returncode == 0 and sh(["verify"], text + "---\n" + json.dumps(eager)).returncode == 0
         old, _ = solve(text, OFF)
         if old["status"] == "optimal":
             ok = ok and agree(old["objective"], hv)
     if not ok:
-        fails.append(f"{name}: defaults {new.get('status')} {new.get('objective')}, HiGHS {hs} {hv}")
+        fails.append(f"{name}: defaults {new.get('status')} {new.get('objective')}, eager {eager.get('status')} {eager.get('objective')}, HiGHS {hs} {hv}")
     return new
 
 
@@ -74,6 +82,11 @@ for seed in range(1, 9):
     validity(f"set cover seed {seed}", lpgen.set_cover(seed, 20 + seed * 3, 30 + seed * 4, 0.1))
 if len(skipped) > 6:
     fails.append(f"{len(skipped)} instances ran into the node limit: {skipped}")
+EXPECTED_FOUND, EXPECTED_KEPT = 13853, 2174     # measured once (python3 scripts/check_mir.py --print): cuts found and kept by the eager rounds on the validity instances, held exactly
+if "--print" not in sys.argv and (FOUND, KEPT) != (EXPECTED_FOUND, EXPECTED_KEPT):
+    fails.append(f"the eager rounds found {FOUND} cuts and kept {KEPT} on the validity instances (exactly {EXPECTED_FOUND} and {EXPECTED_KEPT} expected)")
+if FOUND == 0:
+    fails.append("no instance got a MIR cut: the gate cannot fail")
 
 # G2
 EFFECT = {"6x8": (35.58, 35.76), "8x10": (42.95, 43.30), "10x12": (72.22, 72.52), "12x12": (69.12, 69.16)}   # root bound without MIR cuts, with them (== optimum)
@@ -133,6 +146,7 @@ for t_i, t in enumerate(big + [text]):
 
 if "--print" in sys.argv:
     print("EFFECT =", {k: tuple(round(v, 2) if v else v for v in roots[k]) for k in roots})
+    print("EXPECTED_FOUND, EXPECTED_KEPT =", FOUND, KEPT)
 for f in fails:
     print("FAIL", f)
 print(f"MIR/RINS gate: {'passed' if not fails else 'FAILED'} ({checks} checks, {len(skipped)} skipped at the node limit, {len(fails)} failures)")

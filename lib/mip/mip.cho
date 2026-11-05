@@ -59,6 +59,14 @@ fn mag(x: float) -> [] float {
     return x;
 }
 
+// A value within 1e-9 of zero is zero (the cuts leave noise of 1e-15 in continuous columns that the report would print).
+fn snap(v: float) -> [] float {
+    if v < 1e-9 && v > -1e-9 {
+        return 0.0;
+    }
+    return v;
+}
+
 fn ffloor(v: float) -> [] float {
     if v > 1e15 || v < -1e15 {
         return v;
@@ -881,7 +889,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
         fres[0] = sign * inc;
         var j = 0;
         while j < n {
-            x[j] = mf[o_ix + j];
+            x[j] = snap(mf[o_ix + j]);
             j = j + 1;
         }
     }
@@ -895,7 +903,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
 // Solves the MIP of the checked model. `x` (length at least n) gets the incumbent; `fres` (length 2) the objective and the best bound, both in the model's own sense (a bound of
 // 1e300 means none is known). `stats`: 0 iterations, 1 rows, 2 columns, 3 nodes whose LP was solved, 4 limit (0 none, 1 nodes, 2 iterations, 3 lp-limit), 5 nodes branched,
 // 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best, 2 hybrid: depth until the first incumbent, then best bound), 3 branching (0 fractional,
-// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child, 8 no implied cuts, 16 no reduced-cost fixing, 32 no pausing and no RINS, 64 no MIR cuts, 128 print the profile), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
+// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child, 8 no implied cuts, 16 no reduced-cost fixing, 32 no pausing and no RINS, 64 no MIR cuts, 128 print the profile, 256 the MIR rounds before the search instead of after its first 300 nodes), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
 
 // One run of `core` to its end on its own arrays, with a node limit and the control of a sub-MIP (docs/design.md 21.2): the incumbent in x/fres, the bounds in sd.
 fn sub_in[&h, &a, &b, &c, &d, &e, &f, &g, &k](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], sd: &!g [float], ctl: &!k [int]) -> [heap] int {
@@ -1311,7 +1319,13 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                 // The MIR cuts are only worth their rounds when the search does not settle the model by itself: the first 300 nodes run without them (a model that one of
                 // the roundings and the implied cuts close, like the ample EV models, never pays for them), and then, if the search is not over, the rounds run, and the search
                 // starts again from the root on the model with the cuts, keeping the incumbent (docs/design.md 21.2).
-                let pend = mir && opts[0] < 0 && opts[1] > 300;
+                let eager = opts[4] / 256 % 2 == 1;
+                if mir && eager {
+                    // experiment bit 256: the rounds before the search, whatever it would have done (the gates use it, so that small models, which the search settles in fewer
+                    // than 300 nodes, exercise the cuts)
+                    mir_rounds(heap, iv, fv, opts, stats);
+                }
+                let pend = mir && !eager && opts[0] < 0 && opts[1] > 300;
                 if pend {
                     // the first run needs room for 301 nodes only
                     let o1 = box_slice(heap, 8, 0);
