@@ -107,6 +107,7 @@ def mincost_flow(seed, nodes, arcs, cap=100):
         lhs = " ".join(("+ " if s > 0 else "- ") + f"f[{e}]" for e, s in out_terms[v])
         lhs = lhs[2:] if lhs.startswith("+ ") else "-" + lhs[2:]
         lines.append(f"    n{v}: {lhs} == {supply[v]};")
+    return "\n".join(lines) + "\n"
 
 # ---- S3 (docs/design.md section 19): mixed-integer families --------------------------------------------------------------------------------------------
 
