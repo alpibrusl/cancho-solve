@@ -8,7 +8,9 @@ module solve.mip;
 // by plunging (the child of the node just solved, in place) or by restoring (the root's optimal tableau, the path's bounds, `refresh`, the dual simplex). See lpeng.cho for the LP side.
 // Everything is in minimisation form inside the search (z = sign * (c x + c0)) and converted at the end. Nothing here reads a clock or a hash: the same model and options give the same bytes.
 
+import solve.cmir as cm;
 import solve.cuts as cu;
+import solve.heur as hu;
 import solve.layout as l;
 import solve.lpeng as le;
 import solve.simplex as sx;
@@ -36,6 +38,14 @@ pub fn r_too_large() -> [] int {
 
 pub fn r_numerical() -> [] int {
     return 5;
+}
+
+pub fn r_paused() -> [] int {
+    return 6;
+}
+
+pub fn r_root() -> [] int {
+    return 7;
 }
 
 pub fn max_node_limit() -> [] int {
@@ -302,6 +312,57 @@ fn open_min[&a, &b](mf: &a [float], mi: &b [int], o_bd: int, o_open: int, nopen:
     return best;
 }
 
+fn count_frac[&c, &e](w: &c [float], mi: &e [int], n: int, o_v: int, o_isint: int) -> [] int {
+    var k = 0;
+    var j = 0;
+    while j < n {
+        if mi[o_isint + j] == 1 {
+            let v = w[o_v + j];
+            if mag(v - fround(v)) > 1e-6 {
+                k = k + 1;
+            }
+        }
+        j = j + 1;
+    }
+    return k;
+}
+
+fn inplace_i(b: bool) -> [] int {
+    if b {
+        return 1;
+    }
+    return 0;
+}
+
+fn fmax_i(a: int, b: int) -> [] int {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn fmin_i(a: int, b: int) -> [] int {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+// The profile of docs/design.md 21.2.1 (printed as `stats.prof` under experiment bit 128; prof[k] is stats[10 + k]): stats[18] incumbent updates, [19] the node of the last, [20] its depth,
+// [21 + 2i] and [22 + 2i] the node and 1000 times the value of the first five, [31] how many came from an integral LP.
+fn prof_inc[&d](stats: &!d [int], nodes: int, depth: int, inc: float, kind: int) -> [] int {
+    let k = stats[18];
+    stats[18] = k + 1;
+    stats[19] = nodes;
+    stats[20] = depth;
+    if k < 5 {
+        stats[21 + 2 * k] = nodes;
+        stats[22 + 2 * k] = truncate(inc * 1000.0);
+    }
+    stats[31] = stats[31] + kind;
+    return 0;
+}
+
 // Takes the next node off the open list (mode 0 the most recent, mode 1 the least bound, ties to the older node), dropping those the incumbent cuts. Returns -1 when none is left.
 // The new length of the list is in mi[o_nopen].
 fn pick_open[&a, &b](mf: &a [float], mi: &!b [int], o_bd: int, o_open: int, o_nopen: int, mode: int, have: bool, inc: float, whole: bool) -> [] int {
@@ -369,7 +430,10 @@ fn rc_fix[&a, &b, &c, &d](eng: int, rw: &a [float], rwi: &b [int], mf: &!c [floa
 }
 
 // Everything the search keeps, laid out in two slices (`mf`, `mi`) and addressed by these offsets. kcap is the capacity of the node arena.
-fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int, eng: int, fi: &!s1 [int], ff: &!s2 [float]) -> [] int {
+// ctl (the driver's control, docs/design.md 21.2): 0 resume a paused search, 1 pause when this many nodes have been solved (-1 never), 2 start with the incumbent in x/fres, 3 the bounds
+// of the columns are in sd[0..n) and sd[n..2n) (a sub-MIP), 4 keep an LP point every this many nodes in sd[2n + slot n ..] (0 never), 5 how many slots (a ring), 6 stop after the root LP and return its point in x and its value in fres[1]. On a pause the search is
+// in the arrays and the incumbent in x/fres; a paused search is resumed with the same arrays.
+fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g [float], mi: &!k [int], x: &!o [float], stats: &!p [int], fres: &!q [float], opts: &r [int], kcap: int, m: int, n: int, eng: int, fi: &!s1 [int], ff: &!s2 [float], sd: &!s3 [float], ctl: &!s4 [int]) -> [] int {
     let big = n + m;
     var o_v = 0;
     let nl = opts[1];
@@ -404,6 +468,8 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
     let o_nopen = ic + 3 * n;
     let o_ul = ic + 3 * n + 1;
     let o_dl = ic + 4 * n + 1;
+    let o_sv = ic + 5 * n + 8;
+    let o_svf = c0 + 8 * n + 4;
     // per-column data from the checked model
     var k2 = 0;
     while k2 < ints[l.h_nsym()] {
@@ -423,6 +489,16 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
         }
         k2 = k2 + 1;
     }
+    if ctl[3] == 1 {
+        var jo = 0;
+        while jo < n {
+            mf[o_l0 + jo] = sd[jo];
+            mf[o_h0 + jo] = sd[n + jo];
+            mf[o_bl + jo] = sd[jo];
+            mf[o_bh + jo] = sd[n + jo];
+            jo = jo + 1;
+        }
+    }
     locks(ints, fl, mi, n, o_ul, o_dl);
     var whole = objective_whole(ints, fl, mi, o_isint);
     if exper % 2 == 1 {
@@ -440,21 +516,48 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
     var extra = 1e300;
     var zroot = 0.0;
     var rcfix = 0;
-    mi[o_nopen] = 0;
-    // ---- the root
     var st = 0;
     var z = 0.0;
     var cur = 0;
-    mi[o_par] = 0 - 1;
-    mi[o_col] = 0 - 1;
-    mf[o_bd] = -1e300;
     var running = true;
-    if nl < 1 {
+    var paused = false;
+    let resume = ctl[0] == 1;
+    if ctl[2] == 1 {
+        have = true;
+        inc = sign * fres[0];
+        mf[o_inc] = inc;
+        var ji = 0;
+        while ji < n {
+            mf[o_ix + ji] = x[ji];
+            ji = ji + 1;
+        }
+    }
+    if resume {
+        cur = mi[o_sv];
+        st = mi[o_sv + 1];
+        nodes = mi[o_sv + 2];
+        branched = mi[o_sv + 3];
+        iters = mi[o_sv + 4];
+        rcfix = mi[o_sv + 5];
+        z = mf[o_svf];
+        zroot = mf[o_svf + 1];
+        o_v = le.zoff(eng, wi, m, n);
+        if have && exper / 16 % 2 == 0 {
+            rcfix = rcfix + rc_fix(eng, rw, rwi, mf, mi, m, n, o_isint, o_l0, o_h0, zroot, inc, whole);
+        }
+    } else {
+        mi[o_nopen] = 0;
+        mi[o_par] = 0 - 1;
+        mi[o_col] = 0 - 1;
+        mf[o_bd] = -1e300;
+    }
+    // ---- the root
+    if nl < 1 && !resume {
         reason = 1;
         running = false;
         extra = -1e300;
     }
-    if running {
+    if running && !resume {
         let remaining = opts[0] - iters;
         if opts[0] >= 0 && remaining <= 0 {
             reason = 2;
@@ -470,6 +573,14 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                 st = 0;
             }
             o_v = le.zoff(eng, wi, m, n);
+            if st == 0 && ctl[3] == 1 {
+                var jr = 0;
+                while jr < n {
+                    le.set_bounds(eng, w, wi, m, n, jr, mf[o_l0 + jr], mf[o_h0 + jr]);
+                    jr = jr + 1;
+                }
+                st = le.refresh(eng, w, wi, fi, ff, m, n);
+            }
             if st == 0 {
                 st = le.run(eng, w, wi, fi, ff, stats, m, n, lim);
                 iters = iters + stats[0];
@@ -494,9 +605,35 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
             }
         }
     }
+    if ctl[6] == 1 && running && st == sx.s_optimal() {
+        // root only (the cut rounds of docs/design.md 21.2): hand back the LP point and its value
+        var jx = 0;
+        while jx < n {
+            x[jx] = w[o_v + jx];
+            jx = jx + 1;
+        }
+        fres[1] = sign * z;
+        stats[0] = iters;
+        stats[3] = 1;
+        return r_root();
+    }
     // ---- the loop: process the node `cur` whose LP was just solved (status st, value z), then choose and solve the next
     while running {
         var plunge = 0 - 1;
+        if st == sx.s_optimal() {
+            let cf = count_frac(w, mi, n, o_v, o_isint);
+            if nodes == 1 {
+                stats[60] = cf;
+                stats[61] = truncate(z * 1000.0);
+            }
+            stats[62] = stats[62] + cf;
+        }
+        if st == sx.s_infeasible() {
+            stats[15] = stats[15] + 1;
+        }
+        if st == sx.s_optimal() && prunable(z, have, inc, whole) {
+            stats[16] = stats[16] + 1;
+        }
         if st == sx.s_optimal() {
             if cur > 0 && bmode == 1 {
                 let dl = fmax(z - mf[o_bd + cur], 0.0) / mf[o_fr + cur];
@@ -513,10 +650,12 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                 var jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
                 if jb < 0 {
                     // integral: offer the rounded point; if its rows fail at the tight tolerance, branch on the least integral column instead
+                    stats[17] = stats[17] + 1;
                     if offer(ints, fl, w, mf, mi, m, n, o_v, o_tx, o_isint, o_inc, o_ix, o_ul, o_dl, have, whole, 1) {
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
+                        prof_inc(stats, nodes, mi[o_dep + cur], inc, 1);
                         if exper / 16 % 2 == 0 {
                             rcfix = rcfix + rc_fix(eng, rw, rwi, mf, mi, m, n, o_isint, o_l0, o_h0, zroot, inc, whole);
                         }
@@ -528,12 +667,22 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                         have = true;
                         inc = mf[o_inc];
                         stats[6] = stats[6] + 1;
+                        prof_inc(stats, nodes, mi[o_dep + cur], inc, 0);
                         if exper / 16 % 2 == 0 {
                             rcfix = rcfix + rc_fix(eng, rw, rwi, mf, mi, m, n, o_isint, o_l0, o_h0, zroot, inc, whole);
                         }
                     }
                 }
                 if jb >= 0 && !prunable(z, have, inc, whole) {
+                    if ctl[4] > 0 && nodes % ctl[4] == 0 {
+                        let slot = stats[71] % ctl[5];
+                        var jg = 0;
+                        while jg < n {
+                            sd[2 * n + slot * n + jg] = w[o_v + jg];
+                            jg = jg + 1;
+                        }
+                        stats[71] = stats[71] + 1;
+                    }
                     let v = w[o_v + jb];
                     let fv = ffloor(v);
                     let idn = stats[7] + 1;
@@ -643,6 +792,15 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                     }
                     cur = nxt;
                     nodes = nodes + 1;
+                    stats[10 + (1 - inplace_i(inplace))] = stats[10 + (1 - inplace_i(inplace))] + 1;
+                    if !inplace {
+                        var pv = nxt;
+                        while pv > 0 {
+                            stats[14] = stats[14] + 1;
+                            pv = mi[o_par + pv];
+                        }
+                    }
+                    stats[32 + fmin_i(mi[o_dep + nxt] / 4, 15)] = stats[32 + fmin_i(mi[o_dep + nxt] / 4, 15)] + 1;
                     if empty {
                         st = sx.s_infeasible();
                     } else {
@@ -654,6 +812,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                         if st == 0 {
                             st = le.run(eng, w, wi, fi, ff, stats, m, n, lim);
                             iters = iters + stats[0];
+                            stats[12 + (1 - inplace_i(inplace))] = stats[12 + (1 - inplace_i(inplace))] + stats[0];
                         }
                         if st > sx.s_limit() {
                             reason = 4;
@@ -673,11 +832,34 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
                 }
             }
         }
+        if running && ctl[1] >= 0 && nodes >= ctl[1] && nodes < nl {
+            paused = true;
+            running = false;
+        }
     }
     stats[0] = iters;
     stats[3] = nodes;
     stats[4] = reason;
     stats[5] = branched;
+    if paused {
+        mi[o_sv] = cur;
+        mi[o_sv + 1] = st;
+        mi[o_sv + 2] = nodes;
+        mi[o_sv + 3] = branched;
+        mi[o_sv + 4] = iters;
+        mi[o_sv + 5] = rcfix;
+        mf[o_svf] = z;
+        mf[o_svf + 1] = zroot;
+        if have {
+            fres[0] = sign * inc;
+            var jp = 0;
+            while jp < n {
+                x[jp] = mf[o_ix + jp];
+                jp = jp + 1;
+            }
+        }
+        return r_paused();
+    }
     var code = r_unknown();
     if reason == 4 {
         stats[0] = iters;
@@ -713,25 +895,14 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2](ints: &a [int]
 // Solves the MIP of the checked model. `x` (length at least n) gets the incumbent; `fres` (length 2) the objective and the best bound, both in the model's own sense (a bound of
 // 1e300 means none is known). `stats`: 0 iterations, 1 rows, 2 columns, 3 nodes whose LP was solved, 4 limit (0 none, 1 nodes, 2 iterations, 3 lp-limit), 5 nodes branched,
 // 6 incumbent updates, 7 nodes created minus one (internal). `opts`: 0 iteration budget (-1 none), 1 node limit, 2 node selection (0 depth, 1 best, 2 hybrid: depth until the first incumbent, then best bound), 3 branching (0 fractional,
-// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
-fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], m_report: int) -> [heap] int {
+// 1 pseudo-cost), 4 experiment bits (1 no objective-integrality cut, 2 no rounding heuristic, 4 plunge to the far child, 8 no implied cuts, 16 no reduced-cost fixing, 32 no pausing and no RINS, 64 no MIR cuts, 128 print the profile), 5 LP engine (0 dense, 1 sparse revised; docs/design.md 19.6).
+
+// One run of `core` to its end on its own arrays, with a node limit and the control of a sub-MIP (docs/design.md 21.2): the incumbent in x/fres, the bounds in sd.
+fn sub_in[&h, &a, &b, &c, &d, &e, &f, &g, &k](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], sd: &!g [float], ctl: &!k [int]) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
-    stats[0] = 0;
-    stats[1] = m_report;
-    stats[2] = n;
-    stats[3] = 0;
-    stats[4] = 0;
-    stats[5] = 0;
-    stats[6] = 0;
-    stats[7] = 0;
-    fres[0] = 0.0;
-    fres[1] = 1e300;
     let eng = opts[5];
     let nnz = ints[l.row_start(m)];
-    if le.too_large(eng, m, n, nnz) {
-        return r_too_large();
-    }
     let kcap = 2 * opts[1] + 2;
     let w = box_slice(heap, le.wlen(eng, m, n, nnz), 0.0);
     let wi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
@@ -739,8 +910,8 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
     let rwi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
     let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
     let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
-    let mf = box_slice(heap, 4 * kcap + 8 * n + 8, 0.0);
-    let mi = box_slice(heap, 5 * kcap + 5 * n + 8, 0);
+    let mf = box_slice(heap, 4 * kcap + 8 * n + 24, 0.0);
+    let mi = box_slice(heap, 5 * kcap + 5 * n + 24, 0);
     var code = 0;
     borrow mut w as &!w1 in {
         borrow mut wi as &!w2 in {
@@ -750,7 +921,7 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
                         borrow mut mi as &!w6 in {
                             borrow mut fi as &!w7 in {
                                 borrow mut ff as &!w8 in {
-                                    code = core(ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8));
+                                    code = core(ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8), sd, ctl);
                                 }
                             }
                         }
@@ -770,6 +941,328 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
     return code;
 }
 
+fn improves(sign: float, a: float, than: float) -> [] bool {
+    return sign * a < sign * than - 1e-9 * (1.0 + mag(than));
+}
+
+// The main search with RINS between its slices (docs/design.md 21.2). `core` is run to the first pause (after `pause` nodes); then, with an incumbent, for each of the LP points it kept
+// (a ring of `gcount`, one every `gstep` nodes) a sub-MIP with the integer columns on which the point and the incumbent agree fixed (RINS) runs for a few nodes; an improved incumbent is
+// handed back to the paused search, which resumes with it (its open nodes are cut by the new value). The pause interval triples each time. Sub-MIPs are separate runs of `core` (no recursion).
+// stats[72] counts sub-MIPs, [73] improvements, [74] their nodes, [75] their iterations.
+fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9, &g10](heap: &!h Heap, ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g1 [float], mi: &!g2 [int], x: &!g3 [float], stats: &!g4 [int], fres: &!g5 [float], opts: &g6 [int], kcap: int, m: int, n: int, eng: int, fi: &!g7 [int], ff: &!g8 [float], sd: &!g9 [float], ctl: &!g10 [int], inherit: bool, mirpend: bool) -> [heap] int {
+    let sign = sense_sign(ints);
+    let gcount = 6;
+    let ik = box_slice(heap, n + 1, 0);
+    let ssd = box_slice(heap, 2 * n + 8, 0.0);
+    let sx2 = box_slice(heap, n + 1, 0.0);
+    let sfr = box_slice(heap, 2, 0.0);
+    let sst = box_slice(heap, 80, 0);
+    let sct = box_slice(heap, 8, 0);
+    let sop = box_slice(heap, 8, 0);
+    var pause = 300;
+    if opts[0] >= 0 || opts[4] / 32 % 2 == 1 {
+        pause = 0 - 1;
+    }
+    ctl[0] = 0;
+    ctl[1] = pause;
+    ctl[2] = 0;
+    if inherit {
+        ctl[2] = 1;
+    }
+    ctl[3] = 0;
+    ctl[4] = 25;
+    ctl[5] = gcount;
+    ctl[6] = 0;
+    var code = 0;
+    var haveinc = inherit;
+    var sub_iters = 0;
+    var stop = false;
+    borrow mut ik as &!k1 in {
+        hu.col_bounds(ints, fl, sd, contents(k1), n);
+        let kv = contents(k1);
+        let nint = hu.count_int(kv, n);
+        code = core(ints, fl, w, wi, rw, rwi, mf, mi, x, stats, fres, opts, kcap, m, n, eng, fi, ff, sd, ctl);
+        if code == r_paused() && mirpend {
+            stop = true;
+        }
+        while code == r_paused() && !stop {
+            haveinc = haveinc || stats[6] > 0;
+            let cnt = fmin_i(stats[71], gcount);
+            stats[71] = 0;
+            if haveinc {
+                var g = 0;
+                while g < cnt {
+                    borrow mut ssd as &!s1 in {
+                        borrow mut sx2 as &!s2 in {
+                            borrow mut sfr as &!s3 in {
+                                borrow mut sst as &!s4 in {
+                                    borrow mut sct as &!s5 in {
+                                        borrow mut sop as &!s6 in {
+                                            let fixed = hu.rins_bounds(kv, sd, sd, 2 * n + g * n, x, contents(s1), n);
+                                            if fixed * 10 >= nint * 3 && fixed < nint {
+                                                let xv = contents(s2);
+                                                var j = 0;
+                                                while j < n {
+                                                    xv[j] = x[j];
+                                                    j = j + 1;
+                                                }
+                                                let fv = contents(s3);
+                                                fv[0] = fres[0];
+                                                let cv = contents(s5);
+                                                cv[0] = 0;
+                                                cv[1] = 0 - 1;
+                                                cv[2] = 1;
+                                                cv[3] = 1;
+                                                cv[4] = 0;
+                                                cv[5] = 1;
+                                                cv[6] = 0;
+                                                let ov = contents(s6);
+                                                ov[0] = 0 - 1;
+                                                ov[1] = fmax_i(50, fmin_i(1000, stats[3] / gcount));
+
+                                                ov[2] = 2;
+                                                ov[3] = 1;
+                                                ov[4] = opts[4];
+                                                ov[5] = eng;
+                                                let sv = contents(s4);
+                                                var q = 0;
+                                                while q < 80 {
+                                                    sv[q] = 0;
+                                                    q = q + 1;
+                                                }
+                                                let c2 = sub_in(heap, ints, fl, xv, sv, fv, ov, contents(s1), cv);
+                                                stats[72] = stats[72] + 1;
+                                                stats[74] = stats[74] + sv[3];
+                                                sub_iters = sub_iters + sv[0];
+                                                if c2 <= r_feasible() && improves(sign, fv[0], fres[0]) {
+                                                    fres[0] = fv[0];
+                                                    q = 0;
+                                                    while q < n {
+                                                        x[q] = xv[q];
+                                                        q = q + 1;
+                                                    }
+                                                    stats[73] = stats[73] + 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    g = g + 1;
+                }
+            }
+            ctl[0] = 1;
+            ctl[1] = ctl[1] * 3;
+            ctl[2] = 0;
+            if haveinc {
+                ctl[2] = 1;
+            }
+            code = core(ints, fl, w, wi, rw, rwi, mf, mi, x, stats, fres, opts, kcap, m, n, eng, fi, ff, sd, ctl);
+        }
+    }
+    stats[75] = sub_iters;
+    stats[0] = stats[0] + sub_iters;
+    unbox_slice(heap, sop);
+    unbox_slice(heap, sct);
+    unbox_slice(heap, sst);
+    unbox_slice(heap, sfr);
+    unbox_slice(heap, sx2);
+    unbox_slice(heap, ssd);
+    unbox_slice(heap, ik);
+    return code;
+}
+
+fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], m_report: int, inherit: bool, mirpend: bool) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    stats[0] = 0;
+    stats[1] = m_report;
+    stats[2] = n;
+    stats[3] = 0;
+    stats[4] = 0;
+    stats[5] = 0;
+    stats[6] = 0;
+    stats[7] = 0;
+    stats[71] = 0;
+    stats[72] = 0;
+    stats[73] = 0;
+    stats[74] = 0;
+    stats[75] = 0;
+    if !inherit {
+        fres[0] = 0.0;
+    }
+    fres[1] = 1e300;
+    let eng = opts[5];
+    let nnz = ints[l.row_start(m)];
+    if le.too_large(eng, m, n, nnz) {
+        return r_too_large();
+    }
+    let kcap = 2 * opts[1] + 2;
+    let w = box_slice(heap, le.wlen(eng, m, n, nnz), 0.0);
+    let wi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
+    let rw = box_slice(heap, le.wlen(eng, m, n, nnz), 0.0);
+    let rwi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
+    let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
+    let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
+    let mf = box_slice(heap, 4 * kcap + 8 * n + 24, 0.0);
+    let mi = box_slice(heap, 5 * kcap + 5 * n + 24, 0);
+    let sd = box_slice(heap, 8 * n + 8, 0.0);
+    let ctl = box_slice(heap, 8, 0);
+    var code = 0;
+    borrow mut w as &!w1 in {
+        borrow mut wi as &!w2 in {
+            borrow mut rw as &!w3 in {
+                borrow mut rwi as &!w4 in {
+                    borrow mut mf as &!w5 in {
+                        borrow mut mi as &!w6 in {
+                            borrow mut fi as &!w7 in {
+                                borrow mut ff as &!w8 in {
+                                    borrow mut sd as &!w9 in {
+                                        borrow mut ctl as &!w10 in {
+                                            code = drive(heap, ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8), contents(w9), contents(w10), inherit, mirpend);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, ctl);
+    unbox_slice(heap, sd);
+    unbox_slice(heap, mi);
+    unbox_slice(heap, mf);
+    unbox_slice(heap, ff);
+    unbox_slice(heap, fi);
+    unbox_slice(heap, rwi);
+    unbox_slice(heap, rw);
+    unbox_slice(heap, wi);
+    unbox_slice(heap, w);
+    return code;
+}
+
+// The MIR cut rounds of docs/design.md 21.2 on the copy (ints2, fl2) of the model, which already holds its implied cuts: solve the root LP (a run of `core` that stops after it), separate
+// from its point (lib/mip/cmir.cho), append the best cuts as rows, and again; stop when no cut is violated, after 200 rounds, after 60 rounds in a row in which the bound did not move
+// by 1e-9 relative, or when the model with the new rows would no longer fit the engine (the rounds use the sparse engine whatever the search uses: the dense one costs m (n + m) per pivot); then drop the cut rows that are not tight at the final point. stats[76] rounds, [77] cuts found,
+// [78] cuts kept. Returns the number of rows kept.
+fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int]) -> [heap] int {
+    let n = ints2[l.h_nvars()];
+    let m0 = ints2[l.h_ncons()];
+    let eng = 1;
+    var mcap = m0 + 4000;
+    if mcap > l.maxrows() {
+        mcap = l.maxrows();
+    }
+    var nnzcap = ints2[l.row_start(m0)] + 300000;
+    if nnzcap > l.maxnz() {
+        nnzcap = l.maxnz();
+    }
+    let si = box_slice(heap, cm.si_len(n, nnzcap), 0);
+    let sf = box_slice(heap, cm.sf_len(n, mcap), 0.0);
+    let xs = box_slice(heap, n + 1, 0.0);
+    let sfr = box_slice(heap, 2, 0.0);
+    let sst = box_slice(heap, 80, 0);
+    let sct = box_slice(heap, 8, 0);
+    let sop = box_slice(heap, 8, 0);
+    let ssd = box_slice(heap, 2 * n + 8, 0.0);
+    var kept = 0;
+    borrow mut si as &!s1 in {
+        borrow mut sf as &!s2 in {
+            borrow mut xs as &!s3 in {
+                borrow mut sfr as &!s4 in {
+                    borrow mut sst as &!s5 in {
+                        borrow mut sct as &!s6 in {
+                            borrow mut sop as &!s7 in {
+                                borrow mut ssd as &!s8 in {
+                                    let siv = contents(s1);
+                                    let sfv = contents(s2);
+                                    let xv = contents(s3);
+                                    let fv = contents(s4);
+                                    let stv = contents(s5);
+                                    let cv = contents(s6);
+                                    let ov = contents(s7);
+                                    cv[0] = 0;
+                                    cv[1] = 0 - 1;
+                                    cv[2] = 0;
+                                    cv[3] = 0;
+                                    cv[4] = 0;
+                                    cv[5] = 1;
+                                    cv[6] = 1;
+                                    ov[0] = 0 - 1;
+                                    ov[1] = 1;
+                                    ov[2] = 0;
+                                    ov[3] = 0;
+                                    ov[4] = opts[4];
+                                    ov[5] = eng;
+                                    cm.colinfo(ints2, fl2, siv, sfv, n);
+                                    var round = 0;
+                                    var stall = 0;
+                                    var last = 0.0;
+                                    var found = 0;
+                                    var go = true;
+                                    while go && round < 300 && stall < 150 {
+                                        let mcur = ints2[l.h_ncons()];
+                                        let nz = ints2[l.row_start(mcur)];
+                                        if le.too_large(eng, mcur + 100, n, nz + 40000) {
+                                            go = false;
+                                        } else {
+                                            let code = sub_in(heap, ints2, fl2, xv, stv, fv, ov, contents(s8), cv);
+                                            stats[79] = stats[79] + stv[0];
+                                            if code != r_root() {
+                                                go = false;
+                                            } else {
+                                                if round > 0 && fv[1] <= last + 1e-9 * (1.0 + mag(last)) {
+                                                    stall = stall + 1;
+                                                } else {
+                                                    stall = 0;
+                                                }
+                                                last = fv[1];
+                                                let np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
+                                                found = found + np;
+                                                var taken = 0;
+                                                var pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np);
+                                                while pick >= 0 && taken < 300 {
+                                                    taken = taken + cm.append(ints2, fl2, siv, sfv, n, nnzcap, mcap, pick);
+                                                    pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np);
+                                                }
+                                                if taken == 0 {
+                                                    go = false;
+                                                }
+                                            }
+                                        }
+                                        round = round + 1;
+                                    }
+                                    // the point of the last LP with every cut: drop the cuts that are not tight there
+                                    let code = sub_in(heap, ints2, fl2, xv, stv, fv, ov, contents(s8), cv);
+                                    if code == r_root() {
+                                        kept = cm.purge(ints2, fl2, xv, m0);
+                                    }
+                                    stats[76] = round;
+                                    stats[77] = found;
+                                    stats[78] = kept;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, ssd);
+    unbox_slice(heap, sop);
+    unbox_slice(heap, sct);
+    unbox_slice(heap, sst);
+    unbox_slice(heap, sfr);
+    unbox_slice(heap, xs);
+    unbox_slice(heap, sf);
+    unbox_slice(heap, si);
+    return kept;
+}
+
 // Solves the MIP of the checked model. With the implied cuts of docs/design.md 19.8 (unless experiment bit 8 is set) the search runs on a copy of the model with the cut rows appended;
 // stats[1] still reports the model's own rows and stats[9] the number of cuts.
 pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
@@ -777,8 +1270,14 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     let m = ints[l.h_ncons()];
     var code = 0;
     var cuts = 0;
-    if opts[4] / 8 % 2 == 1 || opts[1] < 1 || m < 2 {
-        code = search_in(heap, ints, fl, x, stats, fres, opts, m);
+    let implied = opts[4] / 8 % 2 == 0;
+    let mir = opts[4] / 64 % 2 == 0;
+    stats[76] = 0;
+    stats[77] = 0;
+    stats[78] = 0;
+    stats[70] = opts[4] / 128 % 2;
+    if (!implied && !mir) || opts[1] < 1 || m < 2 {
+        code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false);
     } else {
         let i2 = box_slice(heap, l.ints_len(), 0);
         let f2 = box_slice(heap, l.fl_len(), 0.0);
@@ -798,12 +1297,56 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                     fv[q] = fl[q];
                     q = q + 1;
                 }
-                borrow mut si as &!b3 in {
-                    borrow mut sf as &!b4 in {
-                        cuts = cu.generate(ints, fl, iv, fv, contents(b3), contents(b4));
+                if implied {
+                    borrow mut si as &!b3 in {
+                        borrow mut sf as &!b4 in {
+                            cuts = cu.generate(ints, fl, iv, fv, contents(b3), contents(b4));
+                        }
                     }
                 }
-                code = search_in(heap, iv, fv, x, stats, fres, opts, m);
+                // The MIR cuts are only worth their rounds when the search does not settle the model by itself: the first 300 nodes run without them (a model that one of
+                // the roundings and the implied cuts close, like the ample EV models, never pays for them), and then, if the search is not over, the rounds run, and the search
+                // starts again from the root on the model with the cuts, keeping the incumbent (docs/design.md 21.2).
+                let pend = mir && opts[0] < 0 && opts[1] > 300;
+                if pend {
+                    // the first run needs room for 301 nodes only
+                    let o1 = box_slice(heap, 8, 0);
+                    borrow mut o1 as &!o1w in {
+                        let ov1 = contents(o1w);
+                        var u1 = 0;
+                        while u1 < 6 {
+                            ov1[u1] = opts[u1];
+                            u1 = u1 + 1;
+                        }
+                        ov1[1] = 301;
+                        code = search_in(heap, iv, fv, x, stats, fres, ov1, m, false, true);
+                    }
+                    unbox_slice(heap, o1);
+                } else {
+                    code = search_in(heap, iv, fv, x, stats, fres, opts, m, false, false);
+                }
+                if code == r_paused() {
+                    let n1 = stats[3];
+                    let i1 = stats[0];
+                    let b1 = stats[5];
+                    let had = stats[6] > 0;
+                    mir_rounds(heap, iv, fv, opts, stats);
+                    let o2 = box_slice(heap, 8, 0);
+                    borrow mut o2 as &!o2w in {
+                        let ov = contents(o2w);
+                        var u = 0;
+                        while u < 6 {
+                            ov[u] = opts[u];
+                            u = u + 1;
+                        }
+                        ov[1] = opts[1] - n1;
+                        code = search_in(heap, iv, fv, x, stats, fres, ov, m, had, false);
+                    }
+                    unbox_slice(heap, o2);
+                    stats[3] = stats[3] + n1;
+                    stats[0] = stats[0] + i1;
+                    stats[5] = stats[5] + b1;
+                }
             }
         }
         unbox_slice(heap, sf);
