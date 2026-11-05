@@ -1,10 +1,10 @@
 machine: macOS-26.2-arm64-arm-64bit-Mach-O, arm64; python 3.14.5; ortools 9.15.6755; limit 90.0s; ours: minimum of 3 runs under 5 s minus `solve check`; others: solver call only; seconds
-setting  V x T   cols   rows   LP: HiGHS  GLOP    CLP     ours   MIP: HiGHS  SCIP   CBC    ours         ours nodes  answer
-tight    12x12   288    324    0.002      <0.001  <0.001  0.001  0.553       0.733  0.069  1.760        309         ok    
-tight    24x16   768    824    0.004      0.002   0.002   0.004  0.953       2.450  0.126  limit(time)  -           ok    
-tight    36x20   1440   1516   0.008      0.003   0.003   0.011  limit       limit  limit  limit(time)  -           ok    
-tight    48x24   2304   2400   0.017      0.005   0.006   0.030  75.699      7.991  4.046  limit(time)  -           ok    
-tight    60x26   3120   3232   0.026      0.011   0.010   0.051  limit       limit  limit  limit(time)  -           ok    
-ample    48x24   2304   2400   0.006      0.002   0.002   0.032  0.010       0.008  0.010  0.041        1           ok    
-ample    96x32   6144   6304   0.019      0.006   0.013   0.229  0.029       0.022  0.027  0.252        1           ok    
-ample    144x40  11520  11744  0.044      0.014   0.035   0.670  0.065       0.052  0.056  0.797        1           ok    
+setting  V x T   cols   rows   LP: HiGHS  GLOP    CLP     ours    MIP: HiGHS  SCIP   CBC    ours         ours nodes  answer
+tight    12x12   288    324    0.002      <0.001  <0.001  <0.001  0.497       0.648  0.062  2.765        309         ok    
+tight    24x16   768    824    0.004      0.001   0.001   0.001   0.831       2.265  0.114  limit(time)  -           ok    
+tight    36x20   1440   1516   0.008      0.003   0.002   0.002   limit       limit  limit  limit(time)  -           ok    
+tight    48x24   2304   2400   0.016      0.005   0.006   0.005   65.502      6.786  3.388  limit(time)  -           ok    
+tight    60x26   3120   3232   0.023      0.010   0.008   0.005   limit       limit  limit  limit(time)  -           ok    
+ample    48x24   2304   2400   0.006      0.002   0.002   0.005   0.012       0.008  0.009  0.014        1           ok    
+ample    96x32   6144   6304   0.019      0.006   0.013   0.011   0.030       0.033  0.027  0.043        1           ok    
+ample    144x40  11520  11744  0.043      0.015   0.048   0.022   0.064       0.090  0.080  0.088        1           ok    
