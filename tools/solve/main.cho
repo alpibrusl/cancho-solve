@@ -47,7 +47,7 @@ fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a 
     }
     let opts = box_slice(heap, 6, 0);
     let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
-    let st = box_slice(heap, 84, 0);
+    let st = box_slice(heap, 86, 0);
     let fr = box_slice(heap, 2, 0.0);
     var status = 0;
     borrow mut opts as &!ow in {

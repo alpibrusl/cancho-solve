@@ -1153,15 +1153,33 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
     return code;
 }
 
+// bas[i] = 1 when the logical of row i is basic in the state wi (rows 0..mo).
+fn basic_flags[&a, &b](wi: &a [int], n: int, mo: int, bas: &!b [int]) -> [] int {
+    var i = 0;
+    while i < mo {
+        if wi[wi[9] + n + i] >= 0 {
+            bas[i] = 1;
+        } else {
+            bas[i] = 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 // One LP of the cut rounds on the sparse engine (design.md 22.3): the model (ints, fl) loaded cold, or, with `warm`, from the optimal state (ow, owi) of the model it grew from, and solved by the dual
 // simplex. The point goes to x[0..n), the minimised value z to x[n] and its value in the model's sense to fres[1]; st[0] is the iterations. Returns the engine's code (sx.s_optimal() when it solved).
-fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r](ints: &a [int], fl: &b [float], x: &!c [float], fres: &!d [float], st: &!e [int], warm: bool, ow: &f [float], owi: &g [int], w: &!k [float], wi: &!p [int], fi: &!q [int], ff: &!r [float]) -> [] int {
+fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u](ints: &a [int], fl: &b [float], x: &!c [float], fres: &!d [float], st: &!e [int], warm: bool, ow: &f [float], owi: &g [int], rmap: &u [int], w: &!k [float], wi: &!p [int], fi: &!q [int], ff: &!r [float]) -> [] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     st[0] = 0;
     var code = 0;
     if warm {
-        code = le.load_warm(ints, fl, w, wi, fi, ff, ow, owi);
+        code = le.load_warm(ints, fl, w, wi, fi, ff, ow, owi, rmap);
+        if code != 0 {
+            // a basis that does not fit (or does not factorise): the same model from the slack basis
+            code = le.load(1, ints, fl, w, wi, fi, ff, m, n);
+        }
     } else {
         code = le.load(1, ints, fl, w, wi, fi, ff, m, n);
     }
@@ -1206,6 +1224,24 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
     let xc = box_slice(heap, n + 1, 0.0);
     let sfr = box_slice(heap, 2, 0.0);
     let sst = box_slice(heap, 80, 0);
+    let sag = box_slice(heap, mcap + 8, 0);
+    let sbs = box_slice(heap, mcap + 8, 0);
+    let srm = box_slice(heap, mcap + 8, 0);
+    // aging is opt-in (experiment bit 65536, design.md 22.5): the default keeps every cut to the end, as 22.3 does
+    var capf = 2;
+    if opts[4] / 131072 % 8 > 0 {
+        capf = opts[4] / 131072 % 8;
+    }
+    var agelim = 1000000;
+    var stalllim = 150;
+    if opts[4] / 65536 % 2 == 1 {
+        agelim = 8;
+        // with aging the bound may stall for a while (a cut removed is found again), so the rounds are given the whole 300
+        stalllim = 300;
+        if opts[4] / 4096 % 16 > 0 {
+            agelim = opts[4] / 4096 % 16;
+        }
+    }
     var pw = box_slice(heap, 1, 0.0);
     var pwi = box_slice(heap, 1, 0);
     var kept = 0;
@@ -1222,6 +1258,12 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                             let xcv = contents(s9);
                             let fv = contents(s4);
                             let stv = contents(s5);
+                            borrow mut sag as &!s10 in {
+                            borrow mut sbs as &!s11 in {
+                            borrow mut srm as &!s12 in {
+                            let agv = contents(s10);
+                            let bsv = contents(s11);
+                            let rmv = contents(s12);
                             cm.colinfo(ints2, fl2, siv, sfv, n);
                             var round = 0;
                             var stall = 0;
@@ -1251,7 +1293,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                                 borrow mut nwi as &!q2 in {
                                                     borrow mut nfi as &!q3 in {
                                                         borrow mut nff as &!q4 in {
-                                                            code = lp_round(ints2, fl2, xv, fv, stv, usewarm, contents(p1), contents(p2), contents(q1), contents(q2), contents(q3), contents(q4));
+                                                            code = lp_round(ints2, fl2, xv, fv, stv, usewarm, contents(p1), contents(p2), rmv, contents(q1), contents(q2), contents(q3), contents(q4));
                                                         }
                                                     }
                                                 }
@@ -1276,7 +1318,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                             borrow mut cwi as &!c2 in {
                                                 borrow mut cfi as &!c3 in {
                                                     borrow mut cff as &!c4 in {
-                                                        cc = lp_round(ints2, fl2, xcv, fv, stv, false, sfv, siv, contents(c1), contents(c2), contents(c3), contents(c4));
+                                                        cc = lp_round(ints2, fl2, xcv, fv, stv, false, sfv, siv, siv, contents(c1), contents(c2), contents(c3), contents(c4));
                                                     }
                                                 }
                                             }
@@ -1297,6 +1339,12 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                     pwi = nwi;
                                     okc = code == sx.s_optimal();
                                     have = okc;
+                                    if okc {
+                                        borrow pwi as &pb in {
+                                            basic_flags(contents(pb), n, mcur, bsv);
+                                        }
+                                        cm.age_cuts(ints2, fl2, xv, m0, mcur, agv);
+                                    }
                                     if !okc {
                                         go = false;
                                     } else if fin {
@@ -1320,6 +1368,15 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                             }
                                             pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np, taken);
                                         }
+                                        if taken > 0 {
+                                            // the cuts that have been slack for `agelim` rounds leave, with their basic logicals (design.md 22.5)
+                                            var lim = agelim;
+                                            if ints2[l.h_ncons()] - m0 <= capf * m0 {
+                                                lim = 1000000;
+                                            }
+                                            let rem = cm.drop_aged(ints2, fl2, m0, mcur, agv, bsv, lim, rmv);
+                                            stats[84] = stats[84] + rem;
+                                        }
                                         if taken == 0 {
                                             if usewarm {
                                                 // no cut at this vertex of the optimal face: the same model from the slack basis may give another vertex, and cuts there (design.md 22.3)
@@ -1328,7 +1385,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                             } else {
                                                 go = false;
                                             }
-                                        } else if round + 1 >= 300 || stall >= 150 {
+                                        } else if round + 1 >= 300 || stall >= stalllim {
                                             // the last cuts need one more LP, for the point the purge reads
                                             fin = true;
                                         }
@@ -1343,6 +1400,9 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                             stats[76] = round;
                             stats[77] = found;
                             stats[78] = kept;
+                            }
+                            }
+                            }
                         }
                     }
                 }
@@ -1351,6 +1411,9 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
     }
     unbox_slice(heap, pwi);
     unbox_slice(heap, pw);
+    unbox_slice(heap, srm);
+    unbox_slice(heap, sbs);
+    unbox_slice(heap, sag);
     unbox_slice(heap, sst);
     unbox_slice(heap, sfr);
     unbox_slice(heap, xc);
@@ -1377,6 +1440,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     stats[81] = 0;
     stats[82] = 0;
     stats[83] = 0;
+    stats[84] = 0;
     stats[70] = opts[4] / 128 % 2;
     if (!implied && !mir) || opts[1] < 1 || m < 2 {
         code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false);

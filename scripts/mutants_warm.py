@@ -7,6 +7,7 @@ import os, shutil, subprocess, sys, tempfile
 CANCHO = os.environ["CANCHO"]
 R = "lib/lp/revised.cho"
 M = "lib/mip/mip.cho"
+C = "lib/mip/cmir.cho"
 MUTANTS = [
     # the copy of the old state
     (R, "        wi[wi[9] + c] = owi[owi[9] + c];\n", "", "the position of each column is not copied"),
@@ -30,6 +31,27 @@ MUTANTS = [
     (M, "                                                stats[83] = stats[83] + 1;\n", "", "the cold retries are not counted"),
     (M, "                                    stats[79] = stats[79] + stv[0];", "", "the iterations of the rounds are not counted"),
     (M, "                                        stats[82] = stats[82] + stv[0];\n", "", "the iterations of the cold solves are not counted"),
+    # aging and the row map (design.md 22.5)
+    (C, "        if rhs - act > 1e-6 * (1.0 + mag(rhs)) {\n            age[r - m0]", "        if rhs - act < 1e-6 * (1.0 + mag(rhs)) {\n            age[r - m0]", "a tight cut ages and a slack one does not"),
+    (C, "            age[r - m0] = age[r - m0] + 1;", "            age[r - m0] = age[r - m0] + 2;", "a slack cut ages two at a time"),
+    (C, "        } else {\n            age[r - m0] = 0;\n        }", "        }", "a cut that is tight again keeps its age"),
+    (C, "if r < mo && age[r - m0] >= limit && bas[r] == 1 {", "if r < mo && age[r - m0] >= limit {", "a row whose logical is nonbasic may leave"),
+    (C, "if r < mo && age[r - m0] >= limit && bas[r] == 1 {", "if age[r - m0] >= limit && bas[r] == 1 {", "the cuts just appended may leave too"),
+    (C, "                rmap[r] = w;\n", "                rmap[r] = r;\n", "a kept row is mapped to its old number"),
+    (C, "            age[w - m0] = age[r - m0];\n", "", "the ages do not follow the rows"),
+    (C, "        age[z - m0] = 0;\n", "        age[z - m0] = age[z - m0];\n", "the ages past the new end are not cleared"),
+    (C, "            ints2[l.row_sense(w)] = ints2[l.row_sense(r)];\n", "", "(equivalent) the sense of a moved cut is not copied; every cut is a <= row, as is every row that a moved one replaces"),
+    (C, "    var w = m0;\n    var nnz = ints2[l.row_start(m0)];\n    r = m0;\n    while r < m {", "    var w = m0;\n    var nnz = ints2[l.row_start(m0)];\n    r = m0 + 1;\n    while r < m {", "the first cut row is never examined"),
+    (M, "                                            if ints2[l.h_ncons()] - m0 <= capf * m0 {", "                                            if ints2[l.h_ncons()] - m0 <= 0 {", "aging has no cap on the cut rows"),
+    (M, "                                            if ints2[l.h_ncons()] - m0 <= capf * m0 {", "                                            if false {", "no cut is ever kept back by the cap"),
+    (M, "        stalllim = 300;", "        stalllim = 150;", "the rounds with aging stop after 150 without a lift"),
+    (M, "        agelim = 8;\n        // with aging", "        agelim = 1;\n        // with aging", "a cut leaves after one slack round"),
+    (M, "        if wi[wi[9] + n + i] >= 0 {\n            bas[i] = 1;", "        if wi[wi[9] + n + i] < 0 {\n            bas[i] = 1;", "the basic logicals are flagged the other way round"),
+    (M, "                                        cm.age_cuts(ints2, fl2, xv, m0, mcur, agv);\n", "", "the ages are never updated"),
+    (R, "                nc = n + r;", "                nc = col;", "a logical keeps its old column number after rows left"),
+    (R, "            if owi[owi[9] + n + i] < 0 {\n                wi[wi[10] + n + r] = owi[owi[10] + n + i];", "            if false {\n                wi[wi[10] + n + r] = owi[owi[10] + n + i];", "the side of a nonbasic old logical is not copied"),
+    (R, "    var nr = kept;\n", "    var nr = kept + 1;\n", "the first new row's logical is not put in the basis"),
+    (R, "            if r < 0 {\n                keep = false;", "            if false {\n                keep = false;", "the logical of a removed row stays in the basis"),
 ]
 
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]

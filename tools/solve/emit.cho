@@ -512,7 +512,7 @@ pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, te
         w = json.put_key(heap, w, "prof");
         w = json.begin_array(heap, w);
         var pk = 10;
-        while pk < 84 {
+        while pk < 86 {
             w = json.put_int(heap, w, stats[pk]);
             pk = pk + 1;
         }

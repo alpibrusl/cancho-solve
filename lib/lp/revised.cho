@@ -1331,28 +1331,80 @@ pub fn ws_load[&a, &b, &c, &d, &e, &f](ints: &a [int], fl: &b [float], wi: &!c [
     return refactor(wi, wf, fi, ff);
 }
 
-// The grown model (the old one with rows appended, nothing else changed) from the optimal state of the old one (design.md 22.3): the status, the nonbasic values and the weights of the columns
-// the old state had are copied by the offsets of its own header, the new rows' logicals are basic at their rows (setup put them there, with weight 1), and the basis is factorised.
-// The old basis is dual feasible for the grown model and primal infeasible only at violated new rows. `owi`/`owf` must not be `wi`/`wf`. 0, or 4/5.
-pub fn ws_load_warm[&a, &b, &c, &d, &e, &f, &g, &h](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float], fi: &!e [int], ff: &!f [float], owi: &g [int], owf: &h [float]) -> [] int {
+// The grown model from the optimal state of the old one (design.md 22.3, 22.5). `rmap[i]` is the row of the new model that old row i became (rows are only ever removed, in order, with the new rows after
+// the kept ones), or -1 when it was removed; the logical of a removed row must have been basic. The basis is rebuilt by walking the old basis slots in order, dropping the logicals of removed rows and
+// translating the other logicals, then the new rows' logicals (basic, weight 1) follow; the status, the nonbasic values and the weights go with their columns. The old basis is dual feasible for the new
+// model and primal infeasible only at violated new rows. `owi`/`owf` must not be `wi`/`wf`. 0, or 4/5 (4 also when the basis does not come out with as many columns as rows).
+pub fn ws_load_warm[&a, &b, &c, &d, &e, &f, &g, &h, &k](ints: &a [int], fl: &b [float], wi: &!c [int], wf: &!d [float], fi: &!e [int], ff: &!f [float], owi: &g [int], owf: &h [float], rmap: &k [int]) -> [] int {
     setup(ints, fl, wi, wf);
     let n = wi[1];
+    let m = wi[0];
     let mo = owi[0];
+    var j = 0;
+    while j < m {
+        wi[wi[9] + n + j] = 0 - 1;
+        j = j + 1;
+    }
+    var q = 0;
+    var p = 0;
+    while p < mo {
+        let col = owi[owi[8] + p];
+        var nc = col;
+        var keep = true;
+        if col >= n {
+            let r = rmap[col - n];
+            if r < 0 {
+                keep = false;
+            } else {
+                nc = n + r;
+            }
+        }
+        if keep && q < m {
+            wi[wi[8] + q] = nc;
+            wi[wi[9] + nc] = q;
+            wf[wi[21] + q] = owf[owi[21] + p];
+            q = q + 1;
+        } else if keep {
+            return 4;
+        }
+        p = p + 1;
+    }
     var c = 0;
-    while c < n + mo {
-        wi[wi[9] + c] = owi[owi[9] + c];
-        wi[wi[10] + c] = owi[owi[10] + c];
-        wf[wi[18] + c] = owf[owi[18] + c];
+    while c < n {
+        if owi[owi[9] + c] < 0 {
+            wi[wi[10] + c] = owi[owi[10] + c];
+            wf[wi[18] + c] = owf[owi[18] + c];
+        }
         c = c + 1;
     }
+    var kept = 0;
     var i = 0;
     while i < mo {
-        wi[wi[8] + i] = owi[owi[8] + i];
-        wf[wi[21] + i] = owf[owi[21] + i];
+        let r = rmap[i];
+        if r >= 0 {
+            kept = kept + 1;
+            if owi[owi[9] + n + i] < 0 {
+                wi[wi[10] + n + r] = owi[owi[10] + n + i];
+                wf[wi[18] + n + r] = owf[owi[18] + n + i];
+            }
+        }
         i = i + 1;
     }
+    var nr = kept;
+    while nr < m {
+        if q >= m {
+            return 4;
+        }
+        wi[wi[8] + q] = n + nr;
+        wi[wi[9] + n + nr] = q;
+        wf[wi[21] + q] = 1.0;
+        q = q + 1;
+        nr = nr + 1;
+    }
+    if q != m {
+        return 4;
+    }
     wi[42] = ws_interval();
-    let m = wi[0];
     sp.init(fi, m, ws_pool(m, wi[3]), ws_interval() + 1, ws_interval() * m + 16);
     wi[32] = 0;
     return refactor(wi, wf, fi, ff);
