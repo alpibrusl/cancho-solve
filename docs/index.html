@@ -62,7 +62,7 @@
 <span class="a">$ solve run &lt; bakery.sol</span>
 <span class="g">{"status":"optimal","objective":148.8,"x":{"loaf":8.8,"tray":2.4},"verified":true,"max_violation":0.0,"stats":{"iterations":2,"rows":3,"columns":2}}</span></pre><div class="plabel">A van, and a second opinion</div><pre id="screen-van" class="screen" role="tabpanel" aria-labelledby="tab-van" tabindex="0"><span class="d"># a courier van, six parcels, 15 kg: which to take (each whole or not at all)</span>
 <span class="a">$ solve run &lt; van.sol</span>
-<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":5,"rows":1,"columns":6,"nodes":6,"branched":3,"method":"dense","cuts":0}}</span>
+<span class="g">{"status":"optimal","objective":21.0,"bound":21.0,"x":{"take[0]":0.0,"take[1]":1.0,"take[2]":1.0,"take[3]":1.0,"take[4]":1.0,"take[5]":0.0},"verified":true,"max_violation":0.0,"stats":{"iterations":4,"rows":1,"columns":6,"nodes":6,"branched":3,"method":"dense","cuts":0}}</span>
 <span class="d"># a second opinion that shares no code with the search: the model, a line ---, the claimed answer</span>
 <span class="a">$ (cat van.sol; echo ---; solve run &lt; van.sol) | solve verify</span>
 <span class="g">{"status":"verified","objective":21.0,"objective_checked":true,"tolerance":0.000001,"max_bound_violation":0.0,"max_integrality_violation":0.0,"max_row_violation":0.0,"variables":6,"rows":1,"proves":"feasibility and the objective value, not optimality"}</span>
