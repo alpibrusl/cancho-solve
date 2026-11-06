@@ -121,7 +121,7 @@ for name, text in cases[::3]:
     if hstatus != 0:
         continue
     maxim = "maximize" in text.split("subject to")[0]
-    for extra in (("--node-limit", "3"), ("--node-limit", "20"), ("--iteration-limit", "40"), ("--iteration-limit", "400")):
+    for extra in (("--node-limit", "3"), ("--node-limit", "20"), ("--iteration-limit", "40"), ("--iteration-limit", "400"), ("--node-limit", "40", "--branching", "pseudo")):
         q = run("sparse", text, extra)
         n_lim += 1
         if q.returncode not in (0, 1):

@@ -306,6 +306,162 @@ fn pick_branch[&c, &d, &e](w: &c [float], mf: &d [float], mi: &e [int], m: int, 
     return best;
 }
 
+// One strong-branching trial (design.md 22.8): column j takes the bounds [lo, hi], the dual simplex runs for at most `lim` iterations, and the objective it reaches (a lower bound of the
+// child's LP; the node's own value when the child is cut or infeasible: 1e300) is returned; then the bounds [bl, bh] come back and the node is re-optimised. -2e300 when that failed.
+// The iterations of both runs are added to stats[85].
+fn sb_trial[&a, &b, &c, &d, &e, &f, &g](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], stats: &!g [int], m: int, n: int, eng: int, o_v: int, j: int, lo: float, hi: float, bl: float, bh: float, lim: int, have: bool, inc: float, whole: bool) -> [] float {
+    le.set_bounds(eng, w, wi, m, n, j, lo, hi);
+    var st = le.refresh(eng, w, wi, fi, ff, m, n);
+    if st == 0 {
+        if le.make_dual_feasible(eng, w, wi, m, n) > 0 {
+            st = le.refresh(eng, w, wi, fi, ff, m, n);
+        }
+    }
+    var zc = 0.0 - 1e300;
+    if st == 0 {
+        st = le.run(eng, w, wi, fi, ff, stats, m, n, lim);
+        stats[85] = stats[85] + stats[0];
+        if st == sx.s_optimal() || st == sx.s_limit() {
+            zc = objective_at(ints, fl, w, o_v);
+            if prunable(zc, have, inc, whole) {
+                zc = 1e300;
+            }
+        } else if st == sx.s_infeasible() {
+            zc = 1e300;
+        }
+    }
+    le.set_bounds(eng, w, wi, m, n, j, bl, bh);
+    var st2 = le.refresh(eng, w, wi, fi, ff, m, n);
+    if st2 == 0 {
+        if le.make_dual_feasible(eng, w, wi, m, n) > 0 {
+            st2 = le.refresh(eng, w, wi, fi, ff, m, n);
+        }
+    }
+    if st2 == 0 {
+        st2 = le.run(eng, w, wi, fi, ff, stats, m, n, 1000000000);
+        stats[85] = stats[85] + stats[0];
+    }
+    if st2 != sx.s_optimal() {
+        return 0.0 - 2e300;
+    }
+    return zc;
+}
+
+// Reliability branching (design.md 22.8): the integer column to branch on among the fractional ones, or -1 when there is none, or -2 when a trial left the node unsolved (the caller stops as numerical).
+// The LP point of the node is saved in mf[o_tx..] before the trials (they may leave the state at another vertex of the same face) and the node's value z is the objective the gains are taken against.
+// Scores by pseudo-cost go to mf[o_sbs..]; a column with fewer than `eta` observations in a direction is strong-branched, `kmax` at most, the walk stopping after `look` that did not beat the best.
+fn reliable_pick[&a, &b, &c, &d, &e, &f, &g, &k, &p](ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], fi: &!e [int], ff: &!f [float], mf: &!g [float], mi: &!k [int], stats: &!p [int], m: int, n: int, eng: int, o_v: int, o_isint: int, o_pcu: int, o_pcd: int, o_psu: int, o_psd: int, o_bl: int, o_bh: int, o_sbv: int, o_sbs: int, z: float, have: bool, inc: float, whole: bool, eta: int, kmax: int, look: int, lim: int, budget: bool) -> [] int {
+    var j = 0;
+    while j < n {
+        mf[o_sbv + j] = w[o_v + j];
+        j = j + 1;
+    }
+    var su = 0.0;
+    var cu = 0;
+    var sd = 0.0;
+    var cd = 0;
+    j = 0;
+    while j < n {
+        su = su + mf[o_psu + j];
+        cu = cu + mi[o_pcu + j];
+        sd = sd + mf[o_psd + j];
+        cd = cd + mi[o_pcd + j];
+        j = j + 1;
+    }
+    var au = 1.0;
+    var ad = 1.0;
+    if cu > 0 {
+        au = su / float_of(cu);
+    }
+    if cd > 0 {
+        ad = sd / float_of(cd);
+    }
+    j = 0;
+    while j < n {
+        mf[o_sbs + j] = 0.0 - 1.0;
+        if mi[o_isint + j] == 1 {
+            let v = mf[o_sbv + j];
+            let fr = v - ffloor(v);
+            if fmin(fr, 1.0 - fr) > 1e-6 {
+                var eu = au;
+                var ed = ad;
+                if mi[o_pcu + j] > 0 {
+                    eu = mf[o_psu + j] / float_of(mi[o_pcu + j]);
+                }
+                if mi[o_pcd + j] > 0 {
+                    ed = mf[o_psd + j] / float_of(mi[o_pcd + j]);
+                }
+                mf[o_sbs + j] = fmax(ed * fr, 1e-6) * fmax(eu * (1.0 - fr), 1e-6);
+            }
+        }
+        j = j + 1;
+    }
+    var best = 0 - 1;
+    var bscore = 0.0 - 1.0;
+    var done = 0;
+    var noimp = 0;
+    var ps = 1e300;
+    var pj = 0 - 1;
+    var go = true;
+    while go {
+        var cj = 0 - 1;
+        var cs = 0.0 - 1.0;
+        j = 0;
+        while j < n {
+            let sc = mf[o_sbs + j];
+            if sc >= 0.0 && (sc < ps || (sc == ps && j > pj)) && (cj < 0 || sc > cs) {
+                cj = j;
+                cs = sc;
+            }
+            j = j + 1;
+        }
+        if cj < 0 {
+            go = false;
+        } else {
+            ps = cs;
+            pj = cj;
+            var score = cs;
+            let v = mf[o_sbv + cj];
+            let fv = ffloor(v);
+            let fr = v - fv;
+            if (mi[o_pcu + cj] < eta || mi[o_pcd + cj] < eta) && budget && done < kmax {
+                done = done + 1;
+                stats[86] = stats[86] + 1;
+                let zd = sb_trial(ints, fl, w, wi, fi, ff, stats, m, n, eng, o_v, cj, mf[o_bl + cj], fv, mf[o_bl + cj], mf[o_bh + cj], lim, have, inc, whole);
+                if zd < 0.0 - 1e299 {
+                    return 0 - 2;
+                }
+                let zu = sb_trial(ints, fl, w, wi, fi, ff, stats, m, n, eng, o_v, cj, fv + 1.0, mf[o_bh + cj], mf[o_bl + cj], mf[o_bh + cj], lim, have, inc, whole);
+                if zu < 0.0 - 1e299 {
+                    return 0 - 2;
+                }
+                if zd >= 1e299 || zu >= 1e299 {
+                    // a child is cut or infeasible: this column settles the node's branching at once
+                    return cj;
+                }
+                let gd = fmax(zd - z, 0.0);
+                let gu = fmax(zu - z, 0.0);
+                mf[o_psd + cj] = mf[o_psd + cj] + gd / fmax(fr, 1e-9);
+                mi[o_pcd + cj] = mi[o_pcd + cj] + 1;
+                mf[o_psu + cj] = mf[o_psu + cj] + gu / fmax(1.0 - fr, 1e-9);
+                mi[o_pcu + cj] = mi[o_pcu + cj] + 1;
+                score = fmax(gd, 1e-6) * fmax(gu, 1e-6);
+            }
+            if score > bscore {
+                best = cj;
+                bscore = score;
+                noimp = 0;
+            } else {
+                noimp = noimp + 1;
+            }
+            if noimp >= look || (done >= kmax && noimp >= 1) {
+                go = false;
+            }
+        }
+    }
+    return best;
+}
+
 // The least bound among the open nodes (1e300 when none).
 fn open_min[&a, &b](mf: &a [float], mi: &b [int], o_bd: int, o_open: int, nopen: int) -> [] float {
     var best = 1e300;
@@ -478,6 +634,8 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
     let o_dl = ic + 4 * n + 1;
     let o_sv = ic + 5 * n + 8;
     let o_svf = c0 + 8 * n + 4;
+    let o_sbs = c0 + 8 * n + 24;
+    let o_sbv = c0 + 9 * n + 32;
     // per-column data from the checked model
     var k2 = 0;
     while k2 < ints[l.h_nsym()] {
@@ -628,6 +786,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
     // ---- the loop: process the node `cur` whose LP was just solved (status st, value z), then choose and solve the next
     while running {
         var plunge = 0 - 1;
+        let bm = bmode;
         if st == sx.s_optimal() {
             let cf = count_frac(w, mi, n, o_v, o_isint);
             if nodes == 1 {
@@ -643,7 +802,7 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
             stats[16] = stats[16] + 1;
         }
         if st == sx.s_optimal() {
-            if cur > 0 && bmode == 1 {
+            if cur > 0 && bm >= 1 {
                 let dl = fmax(z - mf[o_bd + cur], 0.0) / mf[o_fr + cur];
                 let cc = mi[o_col + cur];
                 if mi[o_dir + cur] == 0 {
@@ -655,7 +814,20 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
                 }
             }
             if !prunable(z, have, inc, whole) {
-                var jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, bmode, 1e-6);
+                var jb = pick_branch(w, mf, mi, m, n, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, fmin_i(bm, 1), 1e-6);
+                var sbv = false;
+                if bm == 2 && jb >= 0 && !prunable(z, have, inc, whole) {
+                    let before = stats[85];
+                    jb = reliable_pick(ints, fl, w, wi, fi, ff, mf, mi, stats, m, n, eng, o_v, o_isint, o_pcu, o_pcd, o_psu, o_psd, o_bl, o_bh, o_sbv, o_sbs, z, have, inc, whole, 4, 8, 4, 40, stats[85] <= iters / 2 + 20000);
+                    iters = iters + stats[85] - before;
+                    sbv = true;
+                    if jb == 0 - 2 {
+                        reason = 4;
+                        running = false;
+                        extra = z;
+                        jb = 0 - 1;
+                    }
+                }
                 if jb < 0 {
                     // integral: offer the rounded point; if its rows fail at the tight tolerance, branch on the least integral column instead
                     stats[17] = stats[17] + 1;
@@ -691,7 +863,10 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
                         }
                         stats[71] = stats[71] + 1;
                     }
-                    let v = w[o_v + jb];
+                    var v = w[o_v + jb];
+                    if sbv {
+                        v = mf[o_sbv + jb];
+                    }
                     let fv = ffloor(v);
                     let idn = stats[7] + 1;
                     let idu = stats[7] + 2;
@@ -927,7 +1102,7 @@ fn sub_in[&h, &a, &b, &c, &d, &e, &f, &g, &k](heap: &!h Heap, ints: &a [int], fl
     let rwi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
     let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
     let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
-    let mf = box_slice(heap, 4 * kcap + 8 * n + 24, 0.0);
+    let mf = box_slice(heap, 4 * kcap + 10 * n + 48, 0.0);
     let mi = box_slice(heap, 5 * kcap + 5 * n + 24, 0);
     var code = 0;
     borrow mut w as &!w1 in {
@@ -1123,7 +1298,7 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
     let rwi = box_slice(heap, le.wilen(eng, m, n, nnz), 0);
     let fi = box_slice(heap, le.filen(eng, m, nnz), 0);
     let ff = box_slice(heap, le.fflen(eng, m, nnz), 0.0);
-    let mf = box_slice(heap, 4 * kcap + 8 * n + 24, 0.0);
+    let mf = box_slice(heap, 4 * kcap + 10 * n + 48, 0.0);
     let mi = box_slice(heap, 5 * kcap + 5 * n + 24, 0);
     let sd = box_slice(heap, 8 * n + 8, 0.0);
     let ctl = box_slice(heap, 8, 0);
@@ -1450,6 +1625,8 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     stats[82] = 0;
     stats[83] = 0;
     stats[84] = 0;
+    stats[85] = 0;
+    stats[86] = 0;
     stats[70] = opts[4] / 128 % 2;
     if (!implied && !mir) || opts[1] < 1 || m < 2 {
         code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false);

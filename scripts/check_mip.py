@@ -177,7 +177,7 @@ for name, text in cases[::7]:
 
 # ---- 4b. every option reaches the same optimum (node selection, branching, the ablation bits)
 n_opt = 0
-OPTION_SETS = [["--node-select", "depth"], ["--branching", "fractional"], ["--node-select", "depth", "--branching", "fractional"], ["--experiment", "1"], ["--experiment", "2"], ["--experiment", "4"], ["--experiment", "7"]]
+OPTION_SETS = [["--node-select", "depth"], ["--branching", "fractional"], ["--node-select", "depth", "--branching", "fractional"], ["--experiment", "1"], ["--experiment", "2"], ["--experiment", "4"], ["--experiment", "7"], ["--branching", "pseudo"], ["--node-select", "depth", "--branching", "pseudo"], ["--experiment", "1", "--branching", "pseudo"], ["--experiment", "2", "--branching", "pseudo"]]
 for name, text in cases[::2]:
     if name not in opt_of:
         continue

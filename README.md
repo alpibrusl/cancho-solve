@@ -48,6 +48,8 @@ python3 scripts/check_cuts.py          # implied cuts through variable upper bou
 CANCHO=... python3 scripts/mutants_cuts.py # deliberate changes to the cut code; every one must be killed or explained (design.md 19.8)
 python3 scripts/check_mir.py          # MIR cuts with path aggregation and the RINS driver never change an answer, and do what is claimed (design.md 22.1; needs scipy)
 CANCHO=... JOBS=4 python3 scripts/mutants_cmir.py # deliberate changes to lib/mip/cmir.cho and the driver; every one must be killed or explained (design.md 22.2)
+python3 scripts/check_branch.py       # reliability branching proves the 24 x 16 models and the old rules stay (design.md 22.8; needs scipy)
+CANCHO=... python3 scripts/mutants_branch.py # deliberate changes to reliability branching; every one must be killed or explained (design.md 22.8)
 python3 scripts/check_warm.py         # the cut rounds start from the previous basis and agree with a cold solve of every round (design.md 22.3)
 CANCHO=... python3 scripts/mutants_warm.py # deliberate changes to the warm start; every one must be killed or explained (design.md 22.3)
 python3 scripts/proto_cmir.py ev:12:12 # the numpy prototype of the MIR cuts: bound after rounds against HiGHS's optimum (design.md 22.1)

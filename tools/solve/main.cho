@@ -4,7 +4,7 @@ edition 7;
 //
 //     solve check           read a model on standard input and check it
 //     solve expand          read a model on standard input and print the expanded flat model (docs/design.md section 12)
-//     solve run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best|hybrid] [--branching fractional|pseudo]   solve the model: an LP (sections 14, 18.3) or a MIP (section 19)
+//     solve run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best|hybrid] [--branching fractional|pseudo|reliable]   solve the model: an LP (sections 14, 18.3) or a MIP (section 19)
 //     solve verify [--tolerance T]   read a model, a line `---` and a claimed solution on standard input; re-check feasibility and the objective (docs/design.md section 20)
 //     solve introspect      the commands, exit codes and rule tags as JSON
 //     solve skill           how to write a model, as text
@@ -47,7 +47,7 @@ fn run_mip[&h, &i, &t, &a, &b](heap: &!h Heap, io: &!i Io, tx: &t [byte], n: &a 
     }
     let opts = box_slice(heap, 6, 0);
     let xs = box_slice(heap, n[layout.h_nvars()] + 1, 0.0);
-    let st = box_slice(heap, 86, 0);
+    let st = box_slice(heap, 88, 0);
     let fr = box_slice(heap, 2, 0.0);
     var status = 0;
     borrow mut opts as &!ow in {
@@ -260,7 +260,7 @@ fn method_code[&a](text: &a [byte]) -> [] int {
 }
 
 fn usage[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, err_write] int {
-    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best|hybrid] [--branching fractional|pseudo] | verify [--tolerance T] | introspect | skill", "pass one verb; check, expand, run and verify read the model on standard input", "", 0 - 1);
+    return emit.refuse(heap, io, "solve.usage", "usage: solve check | expand | run [--relax] [--iteration-limit N] [--method dense|sparse|auto] [--node-limit N] [--node-select depth|best|hybrid] [--branching fractional|pseudo|reliable] | verify [--tolerance T] | introspect | skill", "pass one verb; check, expand, run and verify read the model on standard input", "", 0 - 1);
 }
 
 fn main(world: World) -> [] int {
@@ -286,7 +286,7 @@ fn main(world: World) -> [] int {
                     var limit = 0 - 1;
                     var onodes = 200000;
                     var osel = 2;
-                    var obr = 1;
+                    var obr = 2;
                     var oexp = 0;
                     var good = true;
                     var method = 2;
@@ -315,9 +315,13 @@ fn main(world: World) -> [] int {
                                 osel = 2;
                             }
                             a = a + 1;
-                        } else if bytes.equal(arg(g, a), "--branching") && a + 1 < arg_count(g) && (bytes.equal(arg(g, a + 1), "fractional") || bytes.equal(arg(g, a + 1), "pseudo")) {
+                        } else if bytes.equal(arg(g, a), "--branching") && a + 1 < arg_count(g) && (bytes.equal(arg(g, a + 1), "fractional") || bytes.equal(arg(g, a + 1), "pseudo") || bytes.equal(arg(g, a + 1), "reliable")) {
                             if bytes.equal(arg(g, a + 1), "fractional") {
                                 obr = 0;
+                            } else if bytes.equal(arg(g, a + 1), "pseudo") {
+                                obr = 1;
+                            } else {
+                                obr = 2;
                             }
                             a = a + 1;
                         } else {
