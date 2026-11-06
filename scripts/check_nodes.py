@@ -11,7 +11,8 @@ SOLVE = os.environ.get("SOLVE", "build/solve")
 CFGS = {"default": [], "pseudo": ["--branching", "pseudo"], "depth+fractional": ["--node-select", "depth", "--branching", "fractional"], "best+fractional": ["--branching", "fractional"],
         "depth+pseudo": ["--node-select", "depth", "--branching", "pseudo"], "depth+reliable": ["--node-select", "depth"],
         "whole-cut off": ["--experiment", "1"], "no rounding": ["--experiment", "2"], "far child": ["--experiment", "4"],
-        "19.8 search": ["--experiment", "96"]}   # 96 = 32 (no pausing, no RINS) + 64 (no MIR cuts): the search before docs/design.md 22.1, whose counts are kept so that its effort-only mutants stay killed
+        "19.8 search": ["--experiment", "96"],
+        "restore from root": ["--experiment", "2097152"]}   # the restore of 19.x, from a copy of the root's state (design.md 22.6): kept as an option, so that its copy is tested   # 96 = 32 (no pausing, no RINS) + 64 (no MIR cuts): the search before docs/design.md 22.1, whose counts are kept so that its effort-only mutants stay killed
 # the branching is reliability branching unless a configuration says otherwise (design.md 22.8); "pseudo" is the rule before it
 INSTS = {"mkp 50x10": lpgen.mkp(7, 50, 10), "general int 20x20": lpgen.random_mip(7, 20, 20, 0.4, 1.0), "bin packing 8/4": lpgen.bin_packing_lite(7, 8, 4),
          "knapsack 100": lpgen.knapsack(7, 100), "set cover 120x200": lpgen.set_cover(7, 120, 200, 0.05), "mixed 30x40": lpgen.random_mip(7, 30, 40, 0.3, 0.5)}
@@ -76,6 +77,12 @@ EXACT_DENSE = {
     ('mixed 30x40', 'no rounding'): (643, 10402),
     ('mixed 30x40', 'far child'): (1234, 19154),
     ('mixed 30x40', '19.8 search'): (342, 4329),
+    ('mkp 50x10', 'restore from root'): (185, 2346),
+    ('general int 20x20', 'restore from root'): (1363, 9474),
+    ('bin packing 8/4', 'restore from root'): (4, 155),
+    ('knapsack 100', 'restore from root'): (490, 1589),
+    ('set cover 120x200', 'restore from root'): (12, 1841),
+    ('mixed 30x40', 'restore from root'): (643, 9149),
 }
 
 # The sparse engine's table (docs/design.md 19.6): SOLVE_METHOD=sparse selects it; SOLVE_METHOD=dense or unset selects the dense one (the default of this gate runs `--method dense`
@@ -141,6 +148,12 @@ EXACT_SPARSE = {
     ('mixed 30x40', 'no rounding'): (643, 10419),
     ('mixed 30x40', 'far child'): (1251, 17226),
     ('mixed 30x40', '19.8 search'): (342, 4329),
+    ('mkp 50x10', 'restore from root'): (185, 2346),
+    ('general int 20x20', 'restore from root'): (793, 7126),
+    ('bin packing 8/4', 'restore from root'): (23, 523),
+    ('knapsack 100', 'restore from root'): (490, 1589),
+    ('set cover 120x200', 'restore from root'): (7, 1451),
+    ('mixed 30x40', 'restore from root'): (643, 9171),
 }
 METHOD = os.environ.get("SOLVE_METHOD", "dense")
 os.environ["SOLVE_METHOD"] = METHOD

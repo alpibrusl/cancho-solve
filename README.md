@@ -42,7 +42,7 @@ python3 scripts/check_iterations.py    # gate 5: iteration counts (the pricing a
 python3 scripts/check_sparse.py        # sparse linear algebra against scipy splu (builds on `cancho build --bin sparsetest`; design.md 18.3.1)
 python3 scripts/check_dense_vs_sparse.py # the dense solver as second oracle of the sparse one (design.md 18.3.2)
 python3 scripts/check_mip.py --ortools # integer models against HiGHS MILP, enumeration, CP-SAT and SCIP (design.md 19.2)
-python3 scripts/check_nodes.py        # exact node and iteration counts of the search (design.md 19.2); SOLVE_METHOD=sparse for the sparse engine's table (19.6)
+python3 scripts/check_nodes.py        # exact node and iteration counts (66 pairs, one is the restore from the root, 22.13) of the search (design.md 19.2); SOLVE_METHOD=sparse for the sparse engine's table (19.6)
 python3 scripts/check_mip_engines.py  # the dense and the sparse LP engine of the search agree (design.md 19.6)
 python3 scripts/check_cuts.py          # implied cuts through variable upper bounds never change an answer (design.md 19.8; needs scipy)
 CANCHO=... python3 scripts/mutants_cuts.py # deliberate changes to the cut code; every one must be killed or explained (design.md 19.8)

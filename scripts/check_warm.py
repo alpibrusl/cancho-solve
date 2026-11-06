@@ -90,6 +90,9 @@ for name in ("tight 10x12 cap1", "tight 12x12 cap1"):
 d, p = prof(generate(10, 12, "tight", 1), 256 + 128 + CAP1)
 need(p is not None and p[74] == 0, "10x12 without the aging bit: %s rows removed, none expected" % (p and p[74]))
 big = generate(24, 16, "tight", 1)
+# the rounds go on while they lift (mutant 43 of mutants_cmir.py): 24 x 16 seed 1 runs to the limit of 300 rounds, 301 counting the first, with the default stall limit of 150
+d, p = prof(big, 256 + 128)
+need(p is not None and (p[66], p[67], p[68]) == (301, 5350, 292), "24x16 seed 1, the default rounds: (rounds, cuts found, kept) = %s, (301, 5350, 292) expected" % (p and (p[66], p[67], p[68]),))
 d, p = prof(big, 256 + 128 + AGING)
 need(p is not None and p[74] > 1000 and p[66] <= 301, "24x16 with aging: %s rows removed in %s rounds" % (p and p[74], p and p[66]))
 need(d.get("bound", 0) >= 172.89, "24x16 with aging: the root bound after the rounds is %s, at least 172.89 expected (172.915 with every cut kept)" % d.get("bound"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutants of the MIR cuts (lib/mip/cmir.cho) and of the rounds and the RINS driver around them (lib/mip/mip.cho), docs/design.md 22.1, judged by scripts/check_mir.py. Each mutant is built in a
+"""Mutants of the MIR cuts (lib/mip/cmir.cho) and of the rounds and the RINS driver around them (lib/mip/mip.cho), docs/design.md 22.1, judged by scripts/check_mir.py, scripts/check_sub.py and scripts/check_warm.py. Each mutant is built in a
 scratch copy of the repository and is killed when the gate fails; one that builds and passes is a survivor and must be explained in design.md (22.2). Needs CANCHO=the compiler and scipy.
 Usage: CANCHO=... python3 scripts/mutants_cmir.py   (ONLY=3,4 to run some; JOBS=4 runs that many at once)"""
 import concurrent.futures, os, shutil, subprocess, sys, tempfile
@@ -23,7 +23,7 @@ MUTANTS = [
     (C, "if finite(sf[n + j]) && sf[n + j] - x[j] < best {\n                    best = sf[n + j] - x[j];\n                    kind = 2;", "if finite(sf[n + j]) && sf[n + j] - x[j] < best - 1e30 {\n                    best = sf[n + j] - x[j];\n                    kind = 2;", "a continuous column never takes its upper bound"),
     (C, "            } else if finite(hi) && x[y] > 0.5 * (lo + hi) {\n                comp = true;", "            } else if finite(hi) && x[y] > 2.0 * hi {\n                comp = true;", "an integer column is never complemented"),
     (C, "                rhs2 = rhs2 - a * hi;\n                sf[4 * n + y] = 0.0 - a;", "                rhs2 = rhs2 - a * lo;\n                sf[4 * n + y] = 0.0 - a;", "a complemented column subtracts its lower bound"),
-    (C, "if (finite(lo) && lo != ffloor(lo)) || (finite(hi) && hi != ffloor(hi)) || (!finite(lo) && !finite(hi)) {", "if (!finite(lo) && !finite(hi)) {", "an integer column with a fractional bound is used"),
+    (C, "if (finite(lo) && lo != ffloor(lo)) || (finite(hi) && hi != ffloor(hi)) || (!finite(lo) && !finite(hi)) {", "if (!finite(lo) && !finite(hi)) {", "(equivalent) an integer column with a fractional bound is used: the checker refuses one (solve.bad-bounds), the presolve and the sub-MIPs only write whole bounds, so the guard is not reached"),
     (C, "if viol > 1e-5 && sq > 1e-18 {", "if viol > -1e9 && sq > 1e-18 {", "a cut that is not violated is kept"),
     (C, "let viol = lhs - rh;\n    if !ok", "let viol = lhs - rh + 1.0;\n    if !ok", "(equivalent in effect) the violation is overstated by one in the final test: the cuts of the gate's instances are violated by more than the pool needs"),
     # emitting the cut
@@ -54,14 +54,14 @@ MUTANTS = [
     (C, "        sf[pe + best] = 0.0 - 1.0;\n        // dense copy", "        // dense copy", "a cut that was looked at is looked at again (the selection does not end)"),
     # the rounds
     (M, "taken < 300", "taken < 1", "one cut per round"),
-    (M, "round + 1 >= 300 || stall >= 150", "round + 1 >= 300 || stall >= 3", "the rounds stop after three without a lift"),
-    (M, "round + 1 >= 300 || stall >= 150", "round + 1 >= 2 || stall >= 150", "two rounds"),
+    (M, "round + 1 >= rlim || stall >= stalllim", "round + 1 >= rlim || stall >= 3", "the rounds stop after three without a lift"),
+    (M, "round + 1 >= rlim || stall >= stalllim", "round + 1 >= 2 || stall >= stalllim", "two rounds"),
     (M, "if round > 0 && fv[1] <= last + 1e-9 * (1.0 + mag(last)) {", "if round > 0 {", "every round after the first counts as stalled"),
     (M, "kept = cm.purge(ints2, fl2, xv, m0);", "kept = ints2[l.h_ncons()] - m0;", "the purge is skipped"),
     # the driver
-    (M, "if fixed * 10 >= nint * 3 && fixed < nint {", "if fixed * 10 >= nint * 3 && fixed <= nint {", "a sub-MIP with every integer column fixed"),
-    (M, "if fixed * 10 >= nint * 3 && fixed < nint {", "if fixed < nint {", "a sub-MIP around any number of fixed columns"),
-    (M, "if c2 <= r_feasible() && improves(sign, fv[0], fres[0]) {", "if c2 <= r_feasible() {", "a sub-MIP's point is adopted whether it improves or not"),
+    (M, "if fixed * 10 >= nint * 3 && fixed < nint {", "if fixed * 10 >= nint * 3 && fixed <= nint {", "(equivalent in answers) a sub-MIP with every integer column fixed: it can only give the incumbent back, a waste of effort and nothing else"),
+    (M, "if fixed * 10 >= nint * 3 && fixed < nint {", "if fixed < nint {", "(equivalent in answers) a sub-MIP around any number of fixed columns: a larger sub-MIP costs effort, it finds nothing a smaller one cannot, and every sub-MIP is cut by the incumbent"),
+    (M, "if c2 <= r_feasible() && improves(sign, fv[0], fres[0]) {", "if c2 <= r_feasible() {", "(equivalent in answers) a sub-MIP's point is adopted whether it improves or not: the sub-MIP starts with the incumbent as its cutoff, so what it returns is better or the same point"),
     (M, "return sign * a < sign * than - 1e-9 * (1.0 + mag(than));", "return sign * a > sign * than + 1e-9 * (1.0 + mag(than));", "a worse point counts as an improvement"),
     (M, "            ctl[1] = ctl[1] * 3;", "            ctl[1] = ctl[1] + 1;", "the search pauses at every node after the first pause"),
     (M, "    var pause = 300;", "    var pause = 3;", "the first pause is at three nodes"),
@@ -95,10 +95,16 @@ def run(n):
         if b.returncode != 0:
             return n, "invalid", "does not build: " + (b.stderr or b.stdout).strip()[:200], what
         env = dict(os.environ, SOLVE=os.path.join(tmp, "build/solve"), FAILFAST="1")
-        try:
-            dead = subprocess.run([py, os.path.join(tmp, "scripts/check_mir.py")], cwd=tmp, env=env, capture_output=True, timeout=3000).returncode != 0
-        except subprocess.TimeoutExpired:
-            dead = True
+        dead = False
+        # check_mir.py judges the cuts and the rounds; check_sub.py (design.md 22.9) reaches the pause, the resume and the sub-MIPs of the driver, which the small instances of check_mir.py
+        # no longer do since reliability branching (22.8) settles them in fewer than 300 nodes
+        for gate in ("scripts/check_mir.py", "scripts/check_sub.py", "scripts/check_warm.py"):
+            try:
+                dead = subprocess.run([py, os.path.join(tmp, gate)], cwd=tmp, env=env, capture_output=True, timeout=3000).returncode != 0
+            except subprocess.TimeoutExpired:
+                dead = True
+            if dead:
+                break
         return n, ("killed" if dead else ("explained" if what.startswith("(equivalent") else "SURVIVED")), "", what
 
 
