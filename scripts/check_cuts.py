@@ -3,7 +3,7 @@
 1. validity: on generated EV-depot instances (ample, tight and impossible chargers; several seeds), facility-location instances (the other big-M shape, with equal and with varied bounds) and 60
    random big-M models with every row shape the generator reads or refuses (`mixed`), the status and
    the optimal value with the cuts equal those without (`--experiment 104`: 8 no implied cuts, 32 no pausing and RINS, 64 no MIR cuts, 22.1) and HiGHS's (scipy milp on `solve expand`), to 1e-6 relative; the incumbent `solve verify` accepts.
-2. effect: docs/examples/ev_depot_3.sol adds 6 cuts and takes exactly 3,724 nodes (47,105 without), and its root bound rises from 26.58 to at least 27.2; a knapsack, which has no variable
+2. effect: docs/examples/ev_depot_3.sol adds 6 cuts and takes exactly 1,498 nodes (15,206 without; 3,724 and 47,105 before the restore from the previous node's state, design.md 22.6), and its root bound rises from 26.58 to at least 27.2; a knapsack, which has no variable
    upper bound, gets 0 cuts; `--experiment 8` gives 0 cuts; and the number of cuts added on the generated instances and the sum of their root bounds are held exactly (a weaker or a stronger
    cut moves them).
 Needs scipy. Usage: SOLVE=build/solve python3 scripts/check_cuts.py"""
@@ -77,8 +77,8 @@ here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 ev3 = open(os.path.join(here, "docs", "examples", "ev_depot_3.sol")).read()
 r, _ = solve(ev3, ["--experiment", "96"])   # 96 = 32 + 64: the search of 19.8 (no pausing, no RINS, no MIR cuts), whose count is held
 checks += 1
-if r["stats"]["cuts"] != 6 or r["stats"]["nodes"] != 3724 or abs(r["objective"] - 27.56) > 1e-6:
-    fails.append(f"ev_depot_3: cuts {r['stats']['cuts']} (6), nodes {r['stats']['nodes']} (3724), objective {r.get('objective')}")
+if r["stats"]["cuts"] != 6 or r["stats"]["nodes"] != 1498 or abs(r["objective"] - 27.56) > 1e-6:
+    fails.append(f"ev_depot_3: cuts {r['stats']['cuts']} (6), nodes {r['stats']['nodes']} (1498), objective {r.get('objective')}")
 root, _ = solve(ev3, ["--node-limit", "1", "--experiment", "96"])
 roff, _ = solve(ev3, ["--node-limit", "1", "--experiment", "104"])
 checks += 1

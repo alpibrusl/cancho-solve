@@ -174,3 +174,50 @@ pub fn rcost[&c, &d](eng: int, w: &c [float], wi: &d [int], m: int, n: int, j: i
     }
     return w[m * (n + m) + j];
 }
+
+// A nonbasic structural column sitting on the side its reduced cost does not allow (a column that was fixed under the bounds of the previous node can sit on either) goes to the other
+// bound, so that the state is dual feasible for the new bounds (design.md 22.6). Only when that bound is finite. Call after `refresh`, which computes the reduced costs; the values of the
+// basic columns need another `refresh` when this returns 1. Returns the columns moved.
+pub fn make_dual_feasible[&c, &d](eng: int, w: &!c [float], wi: &!d [int], m: int, n: int) -> [] int {
+    var moved = 0;
+    var j = 0;
+    while j < n {
+        let a = at_state(eng, wi, m, n, j);
+        if a >= 0 {
+            let rc = rcost(eng, w, wi, m, n, j);
+            var lo = 0.0;
+            var hi = 0.0;
+            if eng == 1 {
+                lo = w[wi[19] + j];
+                hi = w[wi[20] + j];
+            } else {
+                let o_v = m * (n + m) + (n + m);
+                lo = w[o_v + (n + m) + j];
+                hi = w[o_v + 2 * (n + m) + j];
+            }
+            var to = 0 - 1;
+            if a == 0 && rc < -1e-9 && hi < 1e20 {
+                to = 1;
+            } else if a == 1 && rc > 1e-9 && lo > -1e20 {
+                to = 0;
+            }
+            if to >= 0 {
+                var bv = lo;
+                if to == 1 {
+                    bv = hi;
+                }
+                if eng == 1 {
+                    wi[wi[10] + j] = to;
+                    w[wi[18] + j] = bv;
+                } else {
+                    let o_v = m * (n + m) + (n + m);
+                    wi[m + n + m + j] = to;
+                    w[o_v + j] = bv;
+                }
+                moved = moved + 1;
+            }
+        }
+        j = j + 1;
+    }
+    return moved;
+}

@@ -773,7 +773,8 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
                         }
                         le.set_bounds(eng, w, wi, m, n, cc, mf[o_bl + cc], mf[o_bh + cc]);
                     } else {
-                        if exper / 2097152 % 2 == 0 {
+                        // from the state the last node left, which is dual feasible for any bounds (design.md 22.6); bit 2097152 restores from the root's, as before
+                        if exper / 2097152 % 2 == 1 {
                             le.copy_f(w, rw);
                             le.copy_i(wi, rwi);
                             le.copied(eng, wi);
@@ -815,6 +816,12 @@ fn core[&a, &b, &c, &d, &e, &f, &g, &k, &o, &p, &q, &r, &s1, &s2, &s3, &s4](ints
                         st = sx.s_infeasible();
                     } else {
                         st = le.refresh(eng, w, wi, fi, ff, m, n);
+                        if st == 0 && !inplace && exper / 2097152 % 2 == 0 {
+                            // restored from the previous node's state: a column that was fixed there may sit on the wrong side now
+                            if le.make_dual_feasible(eng, w, wi, m, n) > 0 {
+                                st = le.refresh(eng, w, wi, fi, ff, m, n);
+                            }
+                        }
                         var lim = dcap;
                         if opts[0] >= 0 && remaining < dcap {
                             lim = remaining;
