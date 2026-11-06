@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gate 10 (docs/design.md 22.8): reliability branching does what is claimed, and the rule it replaced is still there. Written before `reliable_pick`; it fails on a build without it.
-G1 effect: the tight 24 x 16 models of seed 7 (the page's) and of seed 1 are proved optimal with the default (reliability branching): 24,600 nodes (SB iterations 23,414, trials 1,712) and 23,220 nodes
-   (18,770, 1,511), each held exactly; the optimum is HiGHS's (191.45 and 172.93, computed here). With `--branching pseudo` the page's model is not proved in 30,000 nodes (it is not in 100,000) and the
+G1 effect: the tight 24 x 16 models of seed 7 (the page's) and of seed 1 are proved optimal with the default: 3,000 nodes (SB iterations 18,512, trials 1,426) and 47,074 nodes
+   (17,938, 1,424), each held exactly (24,600 and 23,220 nodes before the sub-MIPs got cut rounds of their own, design.md 22.9); the optimum is HiGHS's (191.45 and 172.93, computed here). With `--branching pseudo` the page's model is not proved in 30,000 nodes (it is not in 100,000) and the
    model of seed 1 needs 46,653 nodes, so the rule takes the nodes down by at least 1.9x on the second and makes the first possible.
 G2 the old rules stay: `--branching pseudo` and `--branching fractional` are accepted, the first is the rule of 19.2 (no strong-branching trials, `prof[76] == 0`), the default takes trials.
 G3 refusal: `--branching nonsense` is refused with exit status 2 and a usage tag.
@@ -23,8 +23,8 @@ def need(cond, msg):
         print("FAIL", msg)
 
 
-CASES = [("page 24x16 (seed 7)", generate(24, 16, "tight", 7), 24600, 23414, 1712),
-         ("24x16 seed 1", generate(24, 16, "tight", 1), 23220, 18770, 1511)]
+CASES = [("page 24x16 (seed 7)", generate(24, 16, "tight", 7), 3000, 18512, 1426),
+         ("24x16 seed 1", generate(24, 16, "tight", 1), 47074, 17938, 1424)]
 for name, text, nodes, sbit, trials in CASES:
     r, _ = solve(text, ["--experiment", "128", "--node-limit", "100000"])
     p = r.get("stats", {}).get("prof")

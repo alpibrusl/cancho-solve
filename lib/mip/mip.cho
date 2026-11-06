@@ -1222,7 +1222,39 @@ fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9
                                                     sv[q] = 0;
                                                     q = q + 1;
                                                 }
-                                                let c2 = sub_in(heap, ints, fl, xv, sv, fv, ov, contents(s1), cv);
+                                                var c2 = 0;
+                                                if opts[4] / 4194304 % 2 == 0 {
+                                                    // the sub-MIP gets cut rounds of its own on a private copy of the model, with its own bounds (design.md 22.9)
+                                                    let i2 = box_slice(heap, l.ints_len(), 0);
+                                                    let f2 = box_slice(heap, l.fl_len(), 0.0);
+                                                    let st2 = box_slice(heap, 88, 0);
+                                                    borrow mut i2 as &!r1 in {
+                                                        borrow mut f2 as &!r2 in {
+                                                            borrow mut st2 as &!r3 in {
+                                                                let iv2 = contents(r1);
+                                                                let fv2 = contents(r2);
+                                                                var qq = 0;
+                                                                while qq < l.ints_len() {
+                                                                    iv2[qq] = ints[qq];
+                                                                    qq = qq + 1;
+                                                                }
+                                                                qq = 0;
+                                                                while qq < l.fl_len() {
+                                                                    fv2[qq] = fl[qq];
+                                                                    qq = qq + 1;
+                                                                }
+                                                                mir_rounds(heap, iv2, fv2, ov, contents(r3), contents(s1), true, 15);
+                                                                stats[87] = stats[87] + contents(r3)[76];
+                                                                c2 = sub_in(heap, iv2, fv2, xv, sv, fv, ov, contents(s1), cv);
+                                                            }
+                                                        }
+                                                    }
+                                                    unbox_slice(heap, st2);
+                                                    unbox_slice(heap, f2);
+                                                    unbox_slice(heap, i2);
+                                                } else {
+                                                    c2 = sub_in(heap, ints, fl, xv, sv, fv, ov, contents(s1), cv);
+                                                }
                                                 stats[72] = stats[72] + 1;
                                                 stats[74] = stats[74] + sv[3];
                                                 sub_iters = sub_iters + sv[0];
@@ -1353,7 +1385,7 @@ fn basic_flags[&a, &b](wi: &a [int], n: int, mo: int, bas: &!b [int]) -> [] int 
 
 // One LP of the cut rounds on the sparse engine (design.md 22.3): the model (ints, fl) loaded cold, or, with `warm`, from the optimal state (ow, owi) of the model it grew from, and solved by the dual
 // simplex. The point goes to x[0..n), the minimised value z to x[n] and its value in the model's sense to fres[1]; st[0] is the iterations. Returns the engine's code (sx.s_optimal() when it solved).
-fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u](ints: &a [int], fl: &b [float], x: &!c [float], fres: &!d [float], st: &!e [int], warm: bool, ow: &f [float], owi: &g [int], rmap: &u [int], w: &!k [float], wi: &!p [int], fi: &!q [int], ff: &!r [float]) -> [] int {
+fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u, &v](ints: &a [int], fl: &b [float], x: &!c [float], fres: &!d [float], st: &!e [int], warm: bool, ow: &f [float], owi: &g [int], rmap: &u [int], subb: bool, sdb: &v [float], w: &!k [float], wi: &!p [int], fi: &!q [int], ff: &!r [float]) -> [] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     st[0] = 0;
@@ -1366,6 +1398,20 @@ fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u](ints: &a [int], fl: 
         }
     } else {
         code = le.load(1, ints, fl, w, wi, fi, ff, m, n);
+    }
+    if code == 0 && subb {
+        // the bounds of a sub-MIP (design.md 22.9)
+        var jb = 0;
+        while jb < n {
+            le.set_bounds(1, w, wi, m, n, jb, sdb[jb], sdb[n + jb]);
+            jb = jb + 1;
+        }
+        code = le.refresh(1, w, wi, fi, ff, m, n);
+        if code == 0 {
+            if le.make_dual_feasible(1, w, wi, m, n) > 0 {
+                code = le.refresh(1, w, wi, fi, ff, m, n);
+            }
+        }
     }
     if code == 0 {
         code = le.run(1, w, wi, fi, ff, st, m, n, 1000000000);
@@ -1389,14 +1435,20 @@ fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u](ints: &a [int], fl: 
 // the engine (the rounds use the sparse engine whatever the search uses: the dense one costs m (n + m) per pivot); then drop the cut rows that are not tight at the final point.
 // stats[76] rounds, [77] cuts found, [78] cuts kept, [79] iterations of the rounds, [80] rounds solved warm, [81] disagreements found by bit 512, [82] iterations of the cold solves of bit 512, [83] cold retries after a warm vertex gave no cut.
 // Returns the number of rows kept.
-fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int]) -> [heap] int {
+fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool, rlim: int) -> [heap] int {
     let n = ints2[l.h_nvars()];
     let m0 = ints2[l.h_ncons()];
     var mcap = m0 + 4000;
+    if subb {
+        mcap = m0 + 1500;
+    }
     if mcap > l.maxrows() {
         mcap = l.maxrows();
     }
     var nnzcap = ints2[l.row_start(m0)] + 300000;
+    if subb {
+        nnzcap = ints2[l.row_start(m0)] + 60000;
+    }
     if nnzcap > l.maxnz() {
         nnzcap = l.maxnz();
     }
@@ -1449,6 +1501,14 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                             let bsv = contents(s11);
                             let rmv = contents(s12);
                             cm.colinfo(ints2, fl2, siv, sfv, n);
+                            if subb {
+                                var jc = 0;
+                                while jc < n {
+                                    sfv[jc] = sdb[jc];
+                                    sfv[n + jc] = sdb[n + jc];
+                                    jc = jc + 1;
+                                }
+                            }
                             var round = 0;
                             var stall = 0;
                             var last = 0.0;
@@ -1477,7 +1537,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                                 borrow mut nwi as &!q2 in {
                                                     borrow mut nfi as &!q3 in {
                                                         borrow mut nff as &!q4 in {
-                                                            code = lp_round(ints2, fl2, xv, fv, stv, usewarm, contents(p1), contents(p2), rmv, contents(q1), contents(q2), contents(q3), contents(q4));
+                                                            code = lp_round(ints2, fl2, xv, fv, stv, usewarm, contents(p1), contents(p2), rmv, subb, sdb, contents(q1), contents(q2), contents(q3), contents(q4));
                                                         }
                                                     }
                                                 }
@@ -1502,7 +1562,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                             borrow mut cwi as &!c2 in {
                                                 borrow mut cfi as &!c3 in {
                                                     borrow mut cff as &!c4 in {
-                                                        cc = lp_round(ints2, fl2, xcv, fv, stv, false, sfv, siv, siv, contents(c1), contents(c2), contents(c3), contents(c4));
+                                                        cc = lp_round(ints2, fl2, xcv, fv, stv, false, sfv, siv, siv, subb, sdb, contents(c1), contents(c2), contents(c3), contents(c4));
                                                     }
                                                 }
                                             }
@@ -1569,7 +1629,7 @@ fn mir_rounds[&h, &b, &c, &d, &e](heap: &!h Heap, ints2: &!b [int], fl2: &!c [fl
                                             } else {
                                                 go = false;
                                             }
-                                        } else if round + 1 >= 300 || stall >= stalllim {
+                                        } else if round + 1 >= rlim || stall >= stalllim {
                                             // the last cuts need one more LP, for the point the purge reads
                                             fin = true;
                                         }
@@ -1627,6 +1687,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     stats[84] = 0;
     stats[85] = 0;
     stats[86] = 0;
+    stats[87] = 0;
     stats[70] = opts[4] / 128 % 2;
     if (!implied && !mir) || opts[1] < 1 || m < 2 {
         code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false);
@@ -1663,7 +1724,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                 if mir && eager {
                     // experiment bit 256: the rounds before the search, whatever it would have done (the gates use it, so that small models, which the search settles in fewer
                     // than 300 nodes, exercise the cuts)
-                    mir_rounds(heap, iv, fv, opts, stats);
+                    mir_rounds(heap, iv, fv, opts, stats, fres, false, 300);
                 }
                 let pend = mir && !eager && opts[0] < 0 && opts[1] > 300;
                 if pend {
@@ -1688,7 +1749,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                     let i1 = stats[0];
                     let b1 = stats[5];
                     let had = stats[6] > 0;
-                    mir_rounds(heap, iv, fv, opts, stats);
+                    mir_rounds(heap, iv, fv, opts, stats, fres, false, 300);
                     let o2 = box_slice(heap, 8, 0);
                     borrow mut o2 as &!o2w in {
                         let ov = contents(o2w);
