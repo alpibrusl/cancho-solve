@@ -51,6 +51,7 @@ CANCHO=... JOBS=4 python3 scripts/mutants_cmir.py # deliberate changes to lib/mi
 python3 scripts/check_branch.py       # reliability branching proves the 24 x 16 models and the old rules stay (design.md 22.8; needs scipy)
 CANCHO=... python3 scripts/mutants_branch.py # deliberate changes to reliability branching; every one must be killed or explained (design.md 22.8)
 python3 scripts/check_sub.py          # the sub-MIPs of the driver run cut rounds of their own and find plans the old ones did not (design.md 22.9; needs scipy)
+python3 scripts/check_mpre.py         # the MIP presolve (experiment bit 33554432) drops the rows and fixes the columns the rules say and never changes an answer (design.md 22.12; needs scipy)
 CANCHO=... python3 scripts/mutants_sub.py # deliberate changes to the sub-MIP rounds; every one must be killed or explained (design.md 22.9)
 python3 scripts/check_warm.py         # the cut rounds start from the previous basis and agree with a cold solve of every round (design.md 22.3)
 CANCHO=... python3 scripts/mutants_warm.py # deliberate changes to the warm start; every one must be killed or explained (design.md 22.3)

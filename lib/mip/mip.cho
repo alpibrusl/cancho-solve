@@ -13,6 +13,7 @@ import solve.cuts as cu;
 import solve.heur as hu;
 import solve.layout as l;
 import solve.lpeng as le;
+import solve.mpre as mp;
 import solve.simplex as sx;
 
 // results of `search`
@@ -1141,7 +1142,7 @@ fn improves(sign: float, a: float, than: float) -> [] bool {
 // (a ring of `gcount`, one every `gstep` nodes) a sub-MIP with the integer columns on which the point and the incumbent agree fixed (RINS) runs for a few nodes; an improved incumbent is
 // handed back to the paused search, which resumes with it (its open nodes are cut by the new value). The pause interval triples each time. Sub-MIPs are separate runs of `core` (no recursion).
 // stats[72] counts sub-MIPs, [73] improvements, [74] their nodes, [75] their iterations.
-fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9, &g10](heap: &!h Heap, ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g1 [float], mi: &!g2 [int], x: &!g3 [float], stats: &!g4 [int], fres: &!g5 [float], opts: &g6 [int], kcap: int, m: int, n: int, eng: int, fi: &!g7 [int], ff: &!g8 [float], sd: &!g9 [float], ctl: &!g10 [int], inherit: bool, mirpend: bool) -> [heap] int {
+fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9, &g10, &g11](heap: &!h Heap, ints: &a [int], fl: &b [float], w: &!c [float], wi: &!d [int], rw: &!e [float], rwi: &!f [int], mf: &!g1 [float], mi: &!g2 [int], x: &!g3 [float], stats: &!g4 [int], fres: &!g5 [float], opts: &g6 [int], kcap: int, m: int, n: int, eng: int, fi: &!g7 [int], ff: &!g8 [float], sd: &!g9 [float], ctl: &!g10 [int], inherit: bool, mirpend: bool, pb: &g11 [float], usepb: bool) -> [heap] int {
     let sign = sense_sign(ints);
     let gcount = 6;
     let ik = box_slice(heap, n + 1, 0);
@@ -1171,6 +1172,15 @@ fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9
     var stop = false;
     borrow mut ik as &!k1 in {
         hu.col_bounds(ints, fl, sd, contents(k1), n);
+        if usepb {
+            // the bounds the presolve found (design.md 22.12): the base of the main search and of every sub-MIP
+            var jq = 0;
+            while jq < 2 * n {
+                sd[jq] = pb[jq];
+                jq = jq + 1;
+            }
+            ctl[3] = 1;
+        }
         let kv = contents(k1);
         let nint = hu.count_int(kv, n);
         code = core(ints, fl, w, wi, rw, rwi, mf, mi, x, stats, fres, opts, kcap, m, n, eng, fi, ff, sd, ctl);
@@ -1243,7 +1253,7 @@ fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9
                                                                     fv2[qq] = fl[qq];
                                                                     qq = qq + 1;
                                                                 }
-                                                                mir_rounds(heap, iv2, fv2, ov, contents(r3), contents(s1), true, 15);
+                                                                mir_rounds(heap, iv2, fv2, ov, contents(r3), contents(s1), true, true, 15);
                                                                 stats[87] = stats[87] + contents(r3)[76];
                                                                 c2 = sub_in(heap, iv2, fv2, xv, sv, fv, ov, contents(s1), cv);
                                                             }
@@ -1298,7 +1308,7 @@ fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9
     return code;
 }
 
-fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], m_report: int, inherit: bool, mirpend: bool) -> [heap] int {
+fn search_in[&h, &a, &b, &c, &d, &e, &f, &p](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], m_report: int, inherit: bool, mirpend: bool, pb: &p [float], usepb: bool) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     stats[0] = 0;
@@ -1345,7 +1355,7 @@ fn search_in[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b 
                                 borrow mut ff as &!w8 in {
                                     borrow mut sd as &!w9 in {
                                         borrow mut ctl as &!w10 in {
-                                            code = drive(heap, ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8), contents(w9), contents(w10), inherit, mirpend);
+                                            code = drive(heap, ints, fl, contents(w1), contents(w2), contents(w3), contents(w4), contents(w5), contents(w6), x, stats, fres, opts, kcap, m, n, eng, contents(w7), contents(w8), contents(w9), contents(w10), inherit, mirpend, pb, usepb);
                                         }
                                     }
                                 }
@@ -1435,18 +1445,18 @@ fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u, &v](ints: &a [int], 
 // the engine (the rounds use the sparse engine whatever the search uses: the dense one costs m (n + m) per pivot); then drop the cut rows that are not tight at the final point.
 // stats[76] rounds, [77] cuts found, [78] cuts kept, [79] iterations of the rounds, [80] rounds solved warm, [81] disagreements found by bit 512, [82] iterations of the cold solves of bit 512, [83] cold retries after a warm vertex gave no cut.
 // Returns the number of rows kept.
-fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool, rlim: int) -> [heap] int {
+fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool, small: bool, rlim: int) -> [heap] int {
     let n = ints2[l.h_nvars()];
     let m0 = ints2[l.h_ncons()];
     var mcap = m0 + 4000;
-    if subb {
+    if small {
         mcap = m0 + 1500;
     }
     if mcap > l.maxrows() {
         mcap = l.maxrows();
     }
     var nnzcap = ints2[l.row_start(m0)] + 300000;
-    if subb {
+    if small {
         nnzcap = ints2[l.row_start(m0)] + 60000;
     }
     if nnzcap > l.maxnz() {
@@ -1669,7 +1679,7 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
 
 // Solves the MIP of the checked model. With the implied cuts of docs/design.md 19.8 (unless experiment bit 8 is set) the search runs on a copy of the model with the cut rows appended;
 // stats[1] still reports the model's own rows and stats[9] the number of cuts.
-pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
+fn search_core[&h, &a, &b, &c, &d, &e, &f, &p](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int], pb: &p [float], usepb: bool) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     var code = 0;
@@ -1690,7 +1700,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
     stats[87] = 0;
     stats[70] = opts[4] / 128 % 2;
     if (!implied && !mir) || opts[1] < 1 || m < 2 {
-        code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false);
+        code = search_in(heap, ints, fl, x, stats, fres, opts, m, false, false, pb, usepb);
     } else {
         let i2 = box_slice(heap, l.ints_len(), 0);
         let f2 = box_slice(heap, l.fl_len(), 0.0);
@@ -1724,7 +1734,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                 if mir && eager {
                     // experiment bit 256: the rounds before the search, whatever it would have done (the gates use it, so that small models, which the search settles in fewer
                     // than 300 nodes, exercise the cuts)
-                    mir_rounds(heap, iv, fv, opts, stats, fres, false, 300);
+                    mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);
                 }
                 let pend = mir && !eager && opts[0] < 0 && opts[1] > 300;
                 if pend {
@@ -1738,18 +1748,18 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                             u1 = u1 + 1;
                         }
                         ov1[1] = 301;
-                        code = search_in(heap, iv, fv, x, stats, fres, ov1, m, false, true);
+                        code = search_in(heap, iv, fv, x, stats, fres, ov1, m, false, true, pb, usepb);
                     }
                     unbox_slice(heap, o1);
                 } else {
-                    code = search_in(heap, iv, fv, x, stats, fres, opts, m, false, false);
+                    code = search_in(heap, iv, fv, x, stats, fres, opts, m, false, false, pb, usepb);
                 }
                 if code == r_paused() {
                     let n1 = stats[3];
                     let i1 = stats[0];
                     let b1 = stats[5];
                     let had = stats[6] > 0;
-                    mir_rounds(heap, iv, fv, opts, stats, fres, false, 300);
+                    mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);
                     let o2 = box_slice(heap, 8, 0);
                     borrow mut o2 as &!o2w in {
                         let ov = contents(o2w);
@@ -1759,7 +1769,7 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
                             u = u + 1;
                         }
                         ov[1] = opts[1] - n1;
-                        code = search_in(heap, iv, fv, x, stats, fres, ov, m, had, false);
+                        code = search_in(heap, iv, fv, x, stats, fres, ov, m, had, false, pb, usepb);
                     }
                     unbox_slice(heap, o2);
                     stats[3] = stats[3] + n1;
@@ -1774,5 +1784,80 @@ pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b
         unbox_slice(heap, i2);
     }
     stats[9] = cuts;
+    return code;
+}
+
+// The search, with the presolve of design.md 22.12 when experiment bit 33554432 is set: the model is copied, reduced (rows dropped, bounds tightened), and the search runs on the copy with the
+// presolve's bounds. The solution is a point of the original columns. stats[55], [56], [57]: rows dropped, columns fixed by the rules, bounds a singleton row tightened.
+pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
+    let n = ints[l.h_nvars()];
+    let m = ints[l.h_ncons()];
+    var code = 0;
+    if opts[4] / 33554432 % 2 == 0 || m < 1 {
+        let pb0 = box_slice(heap, 1, 0.0);
+        borrow mut pb0 as &!p0 in {
+            code = search_core(heap, ints, fl, x, stats, fres, opts, contents(p0), false);
+        }
+        unbox_slice(heap, pb0);
+        return code;
+    }
+    let i2 = box_slice(heap, l.ints_len(), 0);
+    let f2 = box_slice(heap, l.fl_len(), 0.0);
+    let pb = box_slice(heap, 2 * n + 1, 0.0);
+    let ik = box_slice(heap, n + 1, 0);
+    let keep = box_slice(heap, m + 1, 0);
+    let scr = box_slice(heap, 2 * n + 2, 0);
+    let cf = box_slice(heap, n + 1, 0.0);
+    let cnt = box_slice(heap, 4, 0);
+    borrow mut i2 as &!b1 in {
+        borrow mut f2 as &!b2 in {
+            borrow mut pb as &!b3 in {
+                borrow mut ik as &!b4 in {
+                    borrow mut keep as &!b5 in {
+                        borrow mut scr as &!b6 in {
+                            borrow mut cf as &!b7 in {
+                                borrow mut cnt as &!b8 in {
+                                    let iv = contents(b1);
+                                    let fv = contents(b2);
+                                    var q = 0;
+                                    while q < l.ints_len() {
+                                        iv[q] = ints[q];
+                                        q = q + 1;
+                                    }
+                                    q = 0;
+                                    while q < l.fl_len() {
+                                        fv[q] = fl[q];
+                                        q = q + 1;
+                                    }
+                                    hu.col_bounds(ints, fl, contents(b3), contents(b4), n);
+                                    let rc = mp.reduce(ints, fl, contents(b4), contents(b3), contents(b5), contents(b6), contents(b7), contents(b8));
+                                    stats[55] = contents(b8)[0];
+                                    stats[56] = contents(b8)[1];
+                                    stats[57] = contents(b8)[2];
+                                    if rc == 1 {
+                                        code = r_infeasible();
+                                    } else {
+                                        if mp.compact(iv, fv, contents(b5), contents(b3)) < 0 {
+                                            code = r_infeasible();
+                                        } else {
+                                            code = search_core(heap, iv, fv, x, stats, fres, opts, contents(b3), true);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, cnt);
+    unbox_slice(heap, cf);
+    unbox_slice(heap, scr);
+    unbox_slice(heap, keep);
+    unbox_slice(heap, ik);
+    unbox_slice(heap, pb);
+    unbox_slice(heap, f2);
+    unbox_slice(heap, i2);
     return code;
 }
