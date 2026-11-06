@@ -12,7 +12,7 @@ GATES = [["scripts/check_mpre.py"]]
 MUTANTS = [
     (P, "                } else if amin >= rlo - tol(rlo) && amax <= rhi + tol(rhi) {\n", "                } else if false {\n", "no row is ever redundant"),
     (P, "                } else if amin >= rlo - tol(rlo) && amax <= rhi + tol(rhi) {\n", "                } else if amin >= rlo - tol(rlo) {\n", "a row is redundant when only its lower side holds"),
-    (P, "                } else if amin > rhi + tol(rhi) || amax < rlo - tol(rlo) {\n", "                } else if amin > rhi + tol(rhi) {\n", "the upper activity bound does not prove infeasibility"),
+    (P, "                } else if amin > rhi + tol(rhi) || amax < rlo - tol(rlo) {\n", "                } else if amin > rhi + tol(rhi) {\n", "(equivalent) the upper activity bound does not prove infeasibility: the row stays and the search proves the model infeasible; the answer is the same"),
     (P, "                        if !(a > 0.0 && nolo || a < 0.0 && nohi) {\n                            scr[jc] = 1;\n                        }\n", "", "lowering a column is never blocked by a row"),
     (P, "                        if !(a > 0.0 && nohi || a < 0.0 && nolo) {\n                            scr[n + jc] = 1;\n                        }\n", "", "raising a column is never blocked by a row"),
     (P, "                if cf[j] >= 0.0 && scr[j] == 0 {", "                if cf[j] >= 0.0 {", "a column with a nonnegative cost is fixed low whatever its rows say"),
@@ -29,7 +29,7 @@ MUTANTS = [
     (M, "                                        if mp.compact(iv, fv, contents(b5), contents(b3)) < 0 {", "                                        if false {", "the rows are not compacted away"),
     (M, "            ctl[3] = 1;\n        }\n", "        }\n", "the root of the main search ignores the presolve's bounds"),
     (M, "                sd[jq] = pb[jq];\n", "                sd[jq] = sd[jq];\n", "the base bounds of the searches are the model's"),
-    (M, "mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);", "mir_rounds(heap, iv, fv, opts, stats, pb, false, false, 300);", "the first cut rounds ignore the presolve's bounds"),
+    (M, "mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);", "mir_rounds(heap, iv, fv, opts, stats, pb, false, false, 300);", "(equivalent in effect) the first cut rounds ignore the presolve's bounds: on 24 tight models the rounds, the cuts found and kept and the root bound are identical, the rounds never meet a tightened bound"),
 ]
 
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]

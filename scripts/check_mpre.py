@@ -7,6 +7,8 @@ G2 agreement: on generated tight EV, facility-location and `mixed` models the st
    One model is held as a known regression (KNOWN_UNPROVEN): tight 10 x 12 seed 1 is proved without the presolve (301 nodes, the MIR rounds close its root gap) and not with it (80.79 against
    80.85 after 200,000 nodes; the original model without its MIR cuts has the same plateau, 22.12.1). The gate fails when that stops being true either way.
 G3 infeasible: models that the activity bounds prove infeasible give `infeasible` with the bit, as without it.
+G5 strength: the rounding of an integer column's bound from a row (two hand models, answers that are wrong without it) and the rounds, cuts found and kept of the eager cut rounds on two models (they use the
+   presolve's bounds: a build whose rounds ignore them gives other counts).
 G4 effect: 24 x 16 seed 7 drops at least 500 rows, and the iterations of the whole search are at most 80 percent of those without the bit, with the same optimum (claims 1 of 22.12; seconds are in the design, not here:
    a timing is not a gate).
 Needs scipy for the oracle. Usage: SOLVE=build/solve python3 scripts/check_mpre.py [--print]"""
@@ -29,8 +31,8 @@ def need(cond, msg):
         print("FAIL", msg)
 
 
-def run(text, bit, extra=()):
-    d, _ = solve(text, ["--experiment", str(128 + (BIT if bit else 0)), "--node-limit", "200000"] + list(extra))
+def run(text, bit, extra=(), nodes=200000, more=0):
+    d, _ = solve(text, ["--experiment", str(128 + more + (BIT if bit else 0)), "--node-limit", str(nodes)] + list(extra))
     return d
 
 
@@ -55,8 +57,9 @@ HAND = [
     ("integer bound rounding", "var x : real 0..10;\nvar k : int 0..5;\nminimize t: x + k;\nsubject to\n    s: 3*k >= 4;\n    c: x + k >= 3;\n", 3.0, 1, 0, 1),
 ]
 INFEASIBLE = [
-    ("activity", "var x : real 0..10;\nvar y : real 0..10;\nminimize t: x + y;\nsubject to\n    a: x + y >= 30;\n"),
-    ("singleton crossing", "var x : real 0..10;\nminimize t: x;\nsubject to\n    a: x >= 6;\n    b: x <= 4;\n"),
+    ("activity", guarded("var x : real 0..10;\nvar y : real 0..10;\nminimize t: x + y;\nsubject to\n    a: x + y >= 30;\n")),
+    ("singleton crossing", guarded("var x : real 0..10;\nminimize t: x;\nsubject to\n    a: x >= 6;\n    b: x <= 4;\n")),
+    ("rounding crosses in one row", guarded("var k : int 0..5;\nminimize t: k;\nsubject to\n    a: 3*k == 4;\n")),
     ("empty row after fixing", guarded("var f : real 3..3;\nminimize t: f;\nsubject to\n    r: f >= 5;\n")),
     ("integer rounding", "var k : int 0..5;\nminimize t: k;\nsubject to\n    a: 3*k >= 4;\n    b: 3*k <= 5;\n"),
 ]
@@ -77,6 +80,31 @@ for name, text in INFEASIBLE:
     d0 = run(text, False)
     need(d0.get("status") == "infeasible", "%s: without the presolve %s, infeasible expected (the model is wrong)" % (name, d0.get("status")))
     need(d1.get("status") == "infeasible", "%s: with the presolve %s, infeasible expected" % (name, d1.get("status")))
+
+# G5 rounding (mutants 13 and 14 of 22.12.1): the bound a row gives an integer column is rounded inward, and the dual fixing then fixes the column there. The objective is not whole (a real column
+# with a half in its cost), so nothing else rounds it: without the rounding the column is fixed at 4/3 or 14/3 and the answer is wrong.
+ROUND = [
+    ("lower bound rounded up", "var k : int 0..5;\nvar x : real 0..10;\nminimize t: k + 0.5*x;\nsubject to\n    s: 3*k >= 4;\n    c: x >= 0.2;\n", 2.1),
+    ("upper bound rounded down", "var k : int 0..5;\nvar x : real 0..10;\nmaximize t: k + 0.5*x;\nsubject to\n    s: 3*k <= 14;\n    c: x <= 0.2;\n", 4.1),
+]
+for name, text, opt in ROUND:
+    d1 = run(text, True, nodes=1)
+    need(d1.get("status") == "optimal" and close(d1.get("objective"), opt), "%s: with the presolve %s %s in one node, optimal %s expected" % (name, d1.get("status"), d1.get("objective"), opt))
+    need(d1.get("verified", True) is True, "%s: the answer is not verified" % name)
+
+# the cut rounds use the presolve's bounds: the rounds, the cuts found and kept (eager rounds, bit 256) of two models are held exactly (`--print` re-measures them)
+ROUNDS = {
+    "tight 10x12 seed 2": (54, 569, 110),
+    "tight 12x12 seed 4": (213, 906, 99),
+    "tight 24x16 seed 7": (152, 1806, 137),
+}
+for name, (v, t, s) in (("tight 10x12 seed 2", (10, 12, 2)), ("tight 12x12 seed 4", (12, 12, 4)), ("tight 24x16 seed 7", (24, 16, 7))):
+    d = run(generate(v, t, "tight", s), True, nodes=1, more=256)
+    pr = d.get("stats", {}).get("prof") or [0] * 80
+    got = (pr[66], pr[67], pr[68])
+    if PRINT:
+        print("    %r: %r," % (name, got))
+    need(ROUNDS[name] == got, "%s: (rounds, cuts found, cuts kept) = %s with the presolve, %s expected" % (name, got, ROUNDS[name]))
 
 models = []
 for v, t in [(6, 8), (8, 10), (10, 12)]:
