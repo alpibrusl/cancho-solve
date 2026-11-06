@@ -135,6 +135,15 @@ for name, text in models:
     dropped_total += p[45]
 need(dropped_total > 0, "no row was dropped on any generated model")
 
+# 22.12.2: the known regression is price ties: with the palindromic prices of the generator broken, the same model is proved with the presolve
+PERT = "param price = [0.3, 0.2601, 0.2302, 0.1903, 0.1504, 0.1205, 0.1206, 0.1507, 0.1908, 0.2309, 0.2610, 0.3011];"
+tied = generate(10, 12, "tight", 1)
+pert = "\n".join(PERT if ln.startswith("param price") else ln for ln in tied.split("\n"))
+need(pert != tied, "the price line was not replaced")
+d1 = run(pert, True)
+hs, hv = highs(pert)
+need(d1.get("status") == "optimal" and hs == "optimal" and close(d1.get("objective"), hv), "tight 10x12 seed 1, ties broken: %s %s with the presolve, HiGHS %s %s" % (d1.get("status"), d1.get("objective"), hs, hv))
+
 big = generate(24, 16, "tight", 7)
 d1 = run(big, True)
 d0 = run(big, False)
