@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Gate 11 (docs/design.md 22.9): the sub-MIPs of the driver run cut rounds of their own, and that finds plans the sub-MIPs of 22.8 did not. Written before the code; it fails on a build without it.
-G1 effect (30,000 nodes, defaults against `--experiment 4194304`, the sub-MIPs of 22.8): the page's tight 24 x 16 (seed 7) is proved in 3,000 nodes (24,600 off) and seed 9 in 3,000 (not proved in 30,000 off,
-   192.21 against the optimum 192.11); seeds 4, 6 and 8 end with the incumbents 173.30, 195.89 and 194.61 against 173.54, 196.08 and 194.72: each held exactly and each strictly better.
-G2 the rounds run: `stats.prof[77]` (the rounds of all the sub-MIPs, 289 on the page's model) is positive with the defaults and zero with bit 4194304.
+G1 effect (30,000 nodes, defaults against `--experiment 4194304`, the sub-MIPs of 22.8; numbers with the presolve as the default, 22.12.3): the page's tight 24 x 16 (seed 7) is proved in 3,000 nodes (not proved
+   in 30,000 off, 191.48), seed 9 in 3,000 (192.27 off), seeds 6 and 8 in 8,400 (196.02 and 195.06 off); seed 4 ends at 173.30 on both (before the presolve: 173.30 against 173.54, strictly better; corrected here).
+G2 the rounds run: `stats.prof[77]` (the rounds of all the sub-MIPs, 286 on the page's model) is positive with the defaults and zero with bit 4194304.
 G3 nothing moves where the driver does not run: an instance that finishes in fewer than 300 nodes gives the same nodes, iterations and objective with and without the bit.
 G4 answers: the optimum of each proved model is HiGHS's (computed here).
 Needs scipy. Usage: SOLVE=build/solve python3 scripts/check_sub.py"""
@@ -29,13 +29,14 @@ def run(t, bits, lim=30000):
     return r
 
 
-# (name, seed, expected on: (status, objective, nodes, rounds), expected off: (status, objective, nodes))
-CASES = [("page 24x16 (seed 7)", 7, ("optimal", 191.45, 3000, 289), ("optimal", 191.45, 24600)),
-         ("24x16 seed 9", 9, ("optimal", 192.11, 3000, 268), ("feasible", 192.21, 30000)),
-         ("24x16 seed 4", 4, ("feasible", 173.3, 30000, 437), ("feasible", 173.54, 30000)),
-         ("24x16 seed 6", 6, ("feasible", 195.89, 30000, 479), ("feasible", 196.08, 30000)),
-         ("24x16 seed 8", 8, ("feasible", 194.61, 30000, 466), ("feasible", 194.72, 30000))]
-for name, seed, on, off in CASES:
+# (name, seed, expected on: (status, objective, nodes, rounds), expected off: (status, objective, nodes), strictly better required)
+# Measured with the presolve as the default (design.md 22.12.3); the numbers before it are in 22.9. Seed 4 is a tie now (173.30 on both), held as no worse.
+CASES = [("page 24x16 (seed 7)", 7, ("optimal", 191.45, 3000, 286), ("feasible", 191.48, 30000), True),
+         ("24x16 seed 9", 9, ("optimal", 192.11, 3000, 288), ("feasible", 192.27, 30000), True),
+         ("24x16 seed 4", 4, ("feasible", 173.3, 30000, 472), ("feasible", 173.3, 30000), False),
+         ("24x16 seed 6", 6, ("optimal", 195.8, 8400, 376), ("feasible", 196.02, 30000), True),
+         ("24x16 seed 8", 8, ("optimal", 194.58, 8400, 373), ("feasible", 195.06, 30000), True)]
+for name, seed, on, off, strict in CASES:
     t = generate(24, 16, "tight", seed)
     a, b = run(t, 0), run(t, OFF)
     ga = (a["status"], round(a["objective"], 3), a["stats"]["nodes"], a["stats"]["prof"][77])
@@ -43,8 +44,11 @@ for name, seed, on, off in CASES:
     need(ga == on, "%s: with the rounds %s, exactly %s expected" % (name, ga, on))
     need(gb == off, "%s: without %s, exactly %s expected" % (name, gb, off))
     need(b["stats"]["prof"][77] == 0, "%s: bit 4194304 still runs %d rounds in the sub-MIPs" % (name, b["stats"]["prof"][77]))
-    need(a["objective"] < b["objective"] - 1e-9 or (a["status"] == "optimal" and b["status"] == "optimal" and a["stats"]["nodes"] < b["stats"]["nodes"]),
-         "%s: neither a better incumbent (%s against %s) nor a shorter proof (%s nodes against %s)" % (name, a["objective"], b["objective"], a["stats"]["nodes"], b["stats"]["nodes"]))
+    better = a["objective"] < b["objective"] - 1e-9 or (a["status"] == "optimal" and b["status"] == "optimal" and a["stats"]["nodes"] < b["stats"]["nodes"]) or (a["status"] == "optimal" and b["status"] != "optimal")
+    if strict:
+        need(better, "%s: neither a better incumbent (%s against %s) nor a shorter proof (%s nodes against %s)" % (name, a["objective"], b["objective"], a["stats"]["nodes"], b["stats"]["nodes"]))
+    else:
+        need(a["objective"] <= b["objective"] + 1e-9, "%s: the rounds give a worse incumbent (%s against %s)" % (name, a["objective"], b["objective"]))
     if a["status"] == "optimal":
         hs, hv = highs(t)
         need(abs(a["objective"] - hv) <= 1e-6 * (1 + abs(hv)), "%s: optimum %s, HiGHS %s" % (name, a["objective"], hv))

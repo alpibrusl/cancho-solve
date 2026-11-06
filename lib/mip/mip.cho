@@ -1787,13 +1787,13 @@ fn search_core[&h, &a, &b, &c, &d, &e, &f, &p](heap: &!h Heap, ints: &a [int], f
     return code;
 }
 
-// The search, with the presolve of design.md 22.12 when experiment bit 33554432 is set: the model is copied, reduced (rows dropped, bounds tightened), and the search runs on the copy with the
+// The search, with the presolve of design.md 22.12 unless experiment bit 33554432 is set (design.md 22.12.3): the model is copied, reduced (rows dropped, bounds tightened), and the search runs on the copy with the
 // presolve's bounds. The solution is a point of the original columns. stats[55], [56], [57]: rows dropped, columns fixed by the rules, bounds a singleton row tightened.
 pub fn search[&h, &a, &b, &c, &d, &e, &f](heap: &!h Heap, ints: &a [int], fl: &b [float], x: &!c [float], stats: &!d [int], fres: &!e [float], opts: &f [int]) -> [heap] int {
     let n = ints[l.h_nvars()];
     let m = ints[l.h_ncons()];
     var code = 0;
-    if opts[4] / 33554432 % 2 == 0 || m < 1 {
+    if opts[4] / 33554432 % 2 == 1 || m < 1 {
         let pb0 = box_slice(heap, 1, 0.0);
         borrow mut pb0 as &!p0 in {
             code = search_core(heap, ints, fl, x, stats, fres, opts, contents(p0), false);

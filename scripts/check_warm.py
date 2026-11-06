@@ -33,22 +33,22 @@ def need(cond, msg):
 # (rounds, cuts found, iterations of the rounds, iterations of their cold solves, cut rows removed by aging) per instance, measured once with `python3 scripts/check_warm.py --print` and held exactly: the rounds are deterministic, and these
 # are what notice a change in the weights, in what is counted or in what the LP reports (a mutant that only moves the iterations or the stopping of the rounds)
 EXPECTED = {
-    'tight 6x8': (23, 68, 333, 1343, 0),
-    'tight 8x10': (39, 218, 1058, 7415, 0),
-    'tight 10x12': (132, 687, 5088, 45939, 0),
-    'tight 12x12': (122, 803, 7341, 55084, 0),
-    'tight 8x10 cap1': (39, 218, 1058, 7415, 0),
-    'tight 10x12 cap1': (140, 733, 2467, 42373, 417),
-    'tight 12x12 cap1': (155, 968, 7601, 63238, 511),
+    'tight 6x8': (24, 59, 481, 1284, 0),
+    'tight 8x10': (68, 261, 1835, 8590, 0),
+    'tight 10x12': (152, 651, 1938, 36485, 0),
+    'tight 12x12': (132, 803, 8143, 57191, 0),
+    'tight 8x10 cap1': (53, 220, 1005, 6287, 120),
+    'tight 10x12 cap1': (292, 911, 5649, 68555, 653),
+    'tight 12x12 cap1': (130, 937, 7478, 49095, 635),
     'facility 6/8 seed 1': (1, 0, 21, 0, 0),
     'facility 6/8 seed 2': (3, 9, 44, 22, 0),
     'facility 6/8 seed 3': (8, 65, 71, 180, 0),
-    'mixed seed 0': (1, 0, 10, 0, 0),
-    'mixed seed 1': (1, 0, 10, 0, 0),
-    'mixed seed 2': (4, 4, 32, 30, 0),
-    'mixed seed 3': (4, 5, 29, 27, 0),
-    'mixed seed 4': (3, 1, 17, 8, 0),
-    'mixed seed 5': (6, 19, 41, 61, 0),
+    'mixed seed 0': (1, 0, 7, 0, 0),
+    'mixed seed 1': (1, 0, 8, 0, 0),
+    'mixed seed 2': (3, 1, 18, 9, 0),
+    'mixed seed 3': (4, 4, 22, 21, 0),
+    'mixed seed 4': (3, 1, 15, 7, 0),
+    'mixed seed 5': (3, 11, 14, 9, 0),
 }
 PRINT = "--print" in sys.argv
 AGING = 65536        # experiment bit: cuts age out (opt-in, design.md 22.5; the default keeps every cut)
@@ -92,11 +92,11 @@ need(p is not None and p[74] == 0, "10x12 without the aging bit: %s rows removed
 big = generate(24, 16, "tight", 1)
 # the rounds go on while they lift (mutant 43 of mutants_cmir.py): 24 x 16 seed 1 runs to the limit of 300 rounds, 301 counting the first, with the default stall limit of 150
 d, p = prof(big, 256 + 128)
-need(p is not None and (p[66], p[67], p[68]) == (301, 5350, 292), "24x16 seed 1, the default rounds: (rounds, cuts found, kept) = %s, (301, 5350, 292) expected" % (p and (p[66], p[67], p[68]),))
+need(p is not None and (p[66], p[67], p[68]) == (301, 5213, 327), "24x16 seed 1, the default rounds: (rounds, cuts found, kept) = %s, (301, 5213, 327) expected" % (p and (p[66], p[67], p[68]),))
 d, p = prof(big, 256 + 128 + AGING)
 need(p is not None and p[74] > 1000 and p[66] <= 301, "24x16 with aging: %s rows removed in %s rounds" % (p and p[74], p and p[66]))
-need(d.get("bound", 0) >= 172.89, "24x16 with aging: the root bound after the rounds is %s, at least 172.89 expected (172.915 with every cut kept)" % d.get("bound"))
-need(p is not None and p[69] <= 30000, "24x16 with aging: %s iterations in the rounds (about 27,700 expected, 24,378 with every cut kept)" % (p and p[69]))
+need(d.get("bound", 0) >= 172.82, "24x16 with aging: the root bound after the rounds is %s, at least 172.82 expected (172.825 with aging, 172.915 with every cut kept)" % d.get("bound"))
+need(p is not None and p[69] <= 20000, "24x16 with aging: %s iterations in the rounds (about 18,700 expected, 46,277 with every cut kept; with the presolve, design.md 22.12.3)" % (p and p[69]))
 
 if fails:
     print("warm gate: FAILED (%d checks, %d failures)" % (checks, len(fails)))

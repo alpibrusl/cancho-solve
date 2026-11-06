@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate 12 (docs/design.md 22.12): the presolve of the MIP search (experiment bit 33554432) drops the rows and fixes the columns the rules of 22.12 say it must, and it never changes an answer.
+"""Gate 12 (docs/design.md 22.12, 22.12.3): the presolve of the MIP search (the default; experiment bit 33554432 turns it off) drops the rows and fixes the columns the rules of 22.12 say it must, and it never changes an answer.
 Written before `lib/mip/mpre.cho`; it fails on a build without the bit (G1 counts nothing dropped) and on a presolve that drops a row it should not (G2: an answer moves).
 G1 rules: one hand model per rule (redundant row, singleton row, fixed column, dual fixing of a real and of an integer column, rounding of an integer bound), with the rows dropped, the columns fixed
    and the bounds tightened read from `stats.prof` (slots 55, 56, 57 = prof[45], prof[46], prof[47]; bit 128), and the optimum held against the run without the bit and the value written here.
@@ -32,7 +32,7 @@ def need(cond, msg):
 
 
 def run(text, bit, extra=(), nodes=200000, more=0):
-    d, _ = solve(text, ["--experiment", str(128 + more + (BIT if bit else 0)), "--node-limit", str(nodes)] + list(extra))
+    d, _ = solve(text, ["--experiment", str(128 + more + (0 if bit else BIT)), "--node-limit", str(nodes)] + list(extra))
     return d
 
 

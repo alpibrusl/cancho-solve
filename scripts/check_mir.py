@@ -39,25 +39,31 @@ def agree(a, b):
     return a is not None and b is not None and abs(a - b) <= 1e-6 * (1 + abs(b))
 
 
-FOUND = KEPT = 0     # cuts found and kept by the eager rounds on the validity instances (held exactly below)
+FOUND = KEPT = FOUNDP = KEPTP = 0     # cuts found and kept by the eager rounds on the validity instances (held exactly below)
 
 
 def validity(name, text):
     """The defaults and the eager rounds (experiment bit 256: the cuts are built before the search, so that models of fewer than 300 nodes use them) against HiGHS."""
-    global checks, FOUND, KEPT
+    global checks, FOUND, KEPT, FOUNDP, KEPTP
     checks += 1
     new, _ = solve(text)
-    eager, _ = solve(text, ["--experiment", "384"])    # 256 eager + 128 profile
-    if new["status"] in ("feasible", "unknown") or eager["status"] in ("feasible", "unknown"):
+    # the eager rounds are held without the presolve (bit 33554432), which empties many of these models of rows and leaves the cut generators nothing to do (design.md 22.12.3), and with it
+    eager, _ = solve(text, ["--experiment", str(384 + 33554432)])    # 256 eager + 128 profile
+    eagerp, _ = solve(text, ["--experiment", "384"])
+    if new["status"] in ("feasible", "unknown") or eager["status"] in ("feasible", "unknown") or eagerp["status"] in ("feasible", "unknown"):
         skipped.append(name)
         return new
-    FOUND += eager["stats"]["prof"][67]
-    KEPT += eager["stats"]["prof"][68]
+    pr = eager["stats"].get("prof") or [0] * 80    # a model the presolve empties of rows leaves the search no profile (design.md 22.12.3)
+    FOUND += pr[67]
+    KEPT += pr[68]
+    prp = eagerp["stats"].get("prof") or [0] * 80
+    FOUNDP += prp[67]
+    KEPTP += prp[68]
     hs, hv = highs(text)
-    ok = new["status"] == hs and eager["status"] == hs
+    ok = new["status"] == hs and eager["status"] == hs and eagerp["status"] == hs
     if ok and hs == "optimal":
-        ok = agree(new["objective"], hv) and agree(eager["objective"], hv)
-        ok = ok and sh(["verify"], text + "---\n" + json.dumps(new)).returncode == 0 and sh(["verify"], text + "---\n" + json.dumps(eager)).returncode == 0
+        ok = agree(new["objective"], hv) and agree(eager["objective"], hv) and agree(eagerp["objective"], hv)
+        ok = ok and sh(["verify"], text + "---\n" + json.dumps(new)).returncode == 0 and sh(["verify"], text + "---\n" + json.dumps(eager)).returncode == 0 and sh(["verify"], text + "---\n" + json.dumps(eagerp)).returncode == 0
         old, _ = solve(text, OFF)
         if old["status"] == "optimal":
             ok = ok and agree(old["objective"], hv)
@@ -85,6 +91,9 @@ if len(skipped) > 6:
 EXPECTED_FOUND, EXPECTED_KEPT = 25859, 1333     # measured once (python3 scripts/check_mir.py --print; re-measured on purpose for the warm cut rounds of design.md 22.3, was 13853 and 2174; 7061 and 1582 before the cold retries): cuts found and kept by the eager rounds on the validity instances, held exactly
 if "--print" not in sys.argv and (FOUND, KEPT) != (EXPECTED_FOUND, EXPECTED_KEPT):
     fails.append(f"the eager rounds found {FOUND} cuts and kept {KEPT} on the validity instances (exactly {EXPECTED_FOUND} and {EXPECTED_KEPT} expected)")
+EXPECTED_FOUNDP, EXPECTED_KEPTP = 2217, 690      # the same eager rounds with the presolve (the default, design.md 22.12.3): fewer, since the presolve empties many models of rows
+if "--print" not in sys.argv and (FOUNDP, KEPTP) != (EXPECTED_FOUNDP, EXPECTED_KEPTP):
+    fails.append(f"the eager rounds with the presolve found {FOUNDP} cuts and kept {KEPTP} on the validity instances (exactly {EXPECTED_FOUNDP} and {EXPECTED_KEPTP} expected)")
 if FOUND == 0:
     fails.append("no instance got a MIR cut: the gate cannot fail")
 
