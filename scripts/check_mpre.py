@@ -4,8 +4,7 @@ Written before `lib/mip/mpre.cho`; it fails on a build without the bit (G1 count
 G1 rules: one hand model per rule (redundant row, singleton row, fixed column, dual fixing of a real and of an integer column, rounding of an integer bound), with the rows dropped, the columns fixed
    and the bounds tightened read from `stats.prof` (slots 55, 56, 57 = prof[45], prof[46], prof[47]; bit 128), and the optimum held against the run without the bit and the value written here.
 G2 agreement: on generated tight EV, facility-location and `mixed` models the status and the optimum with the bit equal those without it to 1e-7 relative, and HiGHS's, and the answer is verified.
-   One model is held as a known regression (KNOWN_UNPROVEN): tight 10 x 12 seed 1 is proved without the presolve (301 nodes, the MIR rounds close its root gap) and not with it (80.79 against
-   80.85 after 200,000 nodes; the original model without its MIR cuts has the same plateau, 22.12.1). The gate fails when that stops being true either way.
+   No model is held as a known regression now: tight 10 x 12 seed 1 was (proved without the presolve, 80.79 against 80.85 with it, 22.12.1 to 22.12.3) until the root restarts of 22.15 proved it with it.
 G3 infeasible: models that the activity bounds prove infeasible give `infeasible` with the bit, as without it.
 G5 strength: the rounding of an integer column's bound from a row (two hand models, answers that are wrong without it) and the rounds, cuts found and kept of the eager cut rounds on two models (they use the
    presolve's bounds: a build whose rounds ignore them gives other counts).
@@ -94,9 +93,9 @@ for name, text, opt in ROUND:
 
 # the cut rounds use the presolve's bounds: the rounds, the cuts found and kept (eager rounds, bit 256) of two models are held exactly (`--print` re-measures them)
 ROUNDS = {
-    "tight 10x12 seed 2": (54, 569, 110),
-    "tight 12x12 seed 4": (213, 906, 99),
-    "tight 24x16 seed 7": (152, 1806, 137),
+    "tight 10x12 seed 2": (65, 599, 126),
+    "tight 12x12 seed 4": (246, 991, 150),
+    "tight 24x16 seed 7": (236, 2779, 560),
 }
 for name, (v, t, s) in (("tight 10x12 seed 2", (10, 12, 2)), ("tight 12x12 seed 4", (12, 12, 4)), ("tight 24x16 seed 7", (24, 16, 7))):
     d = run(generate(v, t, "tight", s), True, nodes=1, more=256)
@@ -115,7 +114,7 @@ for s in range(1, 21):
 for s in range(60):
     models.append(("mixed seed %d" % s, mixed(s)))
 
-KNOWN_UNPROVEN = {"tight 10x12 seed 1"}
+KNOWN_UNPROVEN = set()      # tight 10x12 seed 1 was held here until the root restarts of design.md 22.15 proved it with the presolve too
 dropped_total = 0
 for name, text in models:
     d1 = run(text, True)

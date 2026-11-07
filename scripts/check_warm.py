@@ -17,8 +17,11 @@ fails = []
 checks = 0
 
 
-def prof(text, exp):
-    d, _ = solve(text, ["--experiment", str(exp), "--node-limit", "1"])
+NORESTART = 134217728    # experiment bit 134217728 * 1: no restarts of the root rounds from perturbed costs (design.md 22.15); the pins below are of the rounds alone, as before them
+
+
+def prof(text, exp, restarts=False):
+    d, _ = solve(text, ["--experiment", str(exp + (0 if restarts else NORESTART)), "--node-limit", "1"])
     return d, (d.get("stats", {}).get("prof") if isinstance(d, dict) else None)
 
 
@@ -103,6 +106,14 @@ for pre, EXP in ((0, EXPECTED), (NOPRE, EXPECTED_NP)):
           need(iters * 5 <= cold, "%s: warm %d iterations against cold %d (at most a fifth required)" % (name, iters, cold))
           d1, p1 = prof(text, 256 + 1024 + 128)
           need(p1 is not None and p1[70] == 0 and p1[69] >= 5 * iters, "%s: bit 1024 does not give the cold counts (%s)" % (name, p1 and (p1[69], p1[70])))
+# the default (two restarts after the rounds, 22.15): every warm solve of every run still agrees with the cold one, and the first round of each of the three runs is cold
+for name, text in models:
+    if name.endswith("cap1"):
+        continue
+    d, p = prof(text, 256 + 512 + 128, restarts=True)
+    need(p is not None and p[71] == 0 and p[70] > 0 or (p is not None and p[66] <= 3), "%s: with the restarts, %s disagreements and %s warm solves in %s rounds" % (name, p and p[71], p and p[70], p and p[66]))
+    if p is not None and p[66] > 3:
+        need(p[70] == p[66] - 3 - p[73], "%s: with the restarts, %d warm solves in %d rounds with %d cold retries (all but the first of each of three runs and the retries are warm)" % (name, p[70], p[66], p[73]))
 need(warm_total > 0, "no warm solve ran on any instance")
 
 # G4 aging (design.md 22.5): rows leave on the tight models with the cap of one and on 24 x 16 with the defaults, and never when bit 65536 keeps every cut

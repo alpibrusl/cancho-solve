@@ -24,8 +24,11 @@ def need(cond, msg):
         print("FAIL", msg)
 
 
+NORESTART = 134217728    # no restarts of the root rounds from perturbed costs (design.md 22.15): the pins below are of the sub-MIP rounds as measured before them; check_restart.py holds the default
+
+
 def run(t, bits, lim=30000):
-    r, _ = solve(t, ["--experiment", str(128 + bits), "--node-limit", str(lim)])
+    r, _ = solve(t, ["--experiment", str(128 + NORESTART + bits), "--node-limit", str(lim)])
     return r
 
 

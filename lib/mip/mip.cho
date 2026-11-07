@@ -1253,7 +1253,7 @@ fn drive[&h, &a, &b, &c, &d, &e, &f, &g1, &g2, &g3, &g4, &g5, &g6, &g7, &g8, &g9
                                                                     fv2[qq] = fl[qq];
                                                                     qq = qq + 1;
                                                                 }
-                                                                mir_rounds(heap, iv2, fv2, ov, contents(r3), contents(s1), true, true, 15);
+                                                                mir_rounds(heap, iv2, fv2, ov, contents(r3), contents(s1), true, true, 15, 0);
                                                                 stats[87] = stats[87] + contents(r3)[76];
                                                                 c2 = sub_in(heap, iv2, fv2, xv, sv, fv, ov, contents(s1), cv);
                                                             }
@@ -1445,7 +1445,7 @@ fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u, &v](ints: &a [int], 
 // the engine (the rounds use the sparse engine whatever the search uses: the dense one costs m (n + m) per pivot); then drop the cut rows that are not tight at the final point.
 // stats[76] rounds, [77] cuts found, [78] cuts kept, [79] iterations of the rounds, [80] rounds solved warm, [81] disagreements found by bit 512, [82] iterations of the cold solves of bit 512, [83] cold retries after a warm vertex gave no cut.
 // Returns the number of rows kept.
-fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool, small: bool, rlim: int) -> [heap] int {
+fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool, small: bool, rlim: int, pseed: int) -> [heap] int {
     let n = ints2[l.h_nvars()];
     let m0 = ints2[l.h_ncons()];
     var mcap = m0 + 4000;
@@ -1464,6 +1464,21 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
     }
     let warm_on = opts[4] / 1024 % 2 == 0;
     let check = opts[4] / 512 % 2 == 1;
+    let perturb = pseed > 0;
+    let nobj = ints2[l.h_obj_nnz()];
+    let osave = box_slice(heap, nobj + 1, 0.0);
+    if perturb {
+        borrow mut osave as &!o1 in {
+            let ov = contents(o1);
+            var pt = 0;
+            while pt < nobj {
+                ov[pt] = fl2[l.obj_coef(pt)];
+                let u = ((pt + 1) * 1103515245 * pseed + 12345 * pseed) % 65536;
+                fl2[l.obj_coef(pt)] = ov[pt] * (1.0 + 0.000001 * float_of(u) / 65536.0);
+                pt = pt + 1;
+            }
+        }
+    }
     let si = box_slice(heap, cm.si_len(n, nnzcap), 0);
     let sf = box_slice(heap, cm.sf_len(n, mcap), 0.0);
     let xs = box_slice(heap, n + 1, 0.0);
@@ -1663,6 +1678,17 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
             }
         }
     }
+    if perturb {
+        borrow mut osave as &!o2 in {
+            let ov2 = contents(o2);
+            var pt2 = 0;
+            while pt2 < nobj {
+                fl2[l.obj_coef(pt2)] = ov2[pt2];
+                pt2 = pt2 + 1;
+            }
+        }
+    }
+    unbox_slice(heap, osave);
     unbox_slice(heap, pwi);
     unbox_slice(heap, pw);
     unbox_slice(heap, srm);
@@ -1674,6 +1700,31 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
     unbox_slice(heap, xs);
     unbox_slice(heap, sf);
     unbox_slice(heap, si);
+    return kept;
+}
+
+// The rounds of the root: after the rounds on the true costs, `k` more on the same model, each from the optimum of costs perturbed by a different
+// deterministic amount of at most 1e-6 relative; the cuts of every run are valid for the model, and the rows kept by one stay for the next (design.md 22.15).
+fn mir_multi[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c [float], opts: &d [int], stats: &!e [int], sdb: &g [float], subb: bool) -> [heap] int {
+    // bits 134217728 * v: v = 0 the default of two restarts, v >= 1 gives v - 1 restarts (v = 1 none, the rounds of 22.3 to 22.9 alone)
+    let v = opts[4] / 134217728 % 16;
+    var restarts = 2;
+    if v > 0 {
+        restarts = v - 1;
+    }
+    var kept = mir_rounds(heap, ints2, fl2, opts, stats, sdb, subb, false, 300, 0);
+    var rounds = stats[76];
+    var found = stats[77];
+    var rs = 1;
+    while rs <= restarts {
+        kept = kept + mir_rounds(heap, ints2, fl2, opts, stats, sdb, subb, false, 300, rs);
+        rounds = rounds + stats[76];
+        found = found + stats[77];
+        rs = rs + 1;
+    }
+    stats[76] = rounds;
+    stats[77] = found;
+    stats[78] = kept;
     return kept;
 }
 
@@ -1734,7 +1785,7 @@ fn search_core[&h, &a, &b, &c, &d, &e, &f, &p](heap: &!h Heap, ints: &a [int], f
                 if mir && eager {
                     // experiment bit 256: the rounds before the search, whatever it would have done (the gates use it, so that small models, which the search settles in fewer
                     // than 300 nodes, exercise the cuts)
-                    mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);
+                    mir_multi(heap, iv, fv, opts, stats, pb, usepb);
                 }
                 let pend = mir && !eager && opts[0] < 0 && opts[1] > 300;
                 if pend {
@@ -1759,7 +1810,7 @@ fn search_core[&h, &a, &b, &c, &d, &e, &f, &p](heap: &!h Heap, ints: &a [int], f
                     let i1 = stats[0];
                     let b1 = stats[5];
                     let had = stats[6] > 0;
-                    mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);
+                    mir_multi(heap, iv, fv, opts, stats, pb, usepb);
                     let o2 = box_slice(heap, 8, 0);
                     borrow mut o2 as &!o2w in {
                         let ov = contents(o2w);

@@ -88,10 +88,10 @@ for seed in range(1, 9):
     validity(f"set cover seed {seed}", lpgen.set_cover(seed, 20 + seed * 3, 30 + seed * 4, 0.1))
 if len(skipped) > 6:
     fails.append(f"{len(skipped)} instances ran into the node limit: {skipped}")
-EXPECTED_FOUND, EXPECTED_KEPT = 25859, 1333     # measured once (python3 scripts/check_mir.py --print; re-measured on purpose for the warm cut rounds of design.md 22.3, was 13853 and 2174; 7061 and 1582 before the cold retries): cuts found and kept by the eager rounds on the validity instances, held exactly
+EXPECTED_FOUND, EXPECTED_KEPT = 27525, 1931     # re-measured for the root restarts of design.md 22.15 (was 25859 and 1333); measured once (python3 scripts/check_mir.py --print; re-measured on purpose for the warm cut rounds of design.md 22.3, was 13853 and 2174; 7061 and 1582 before the cold retries): cuts found and kept by the eager rounds on the validity instances, held exactly
 if "--print" not in sys.argv and (FOUND, KEPT) != (EXPECTED_FOUND, EXPECTED_KEPT):
     fails.append(f"the eager rounds found {FOUND} cuts and kept {KEPT} on the validity instances (exactly {EXPECTED_FOUND} and {EXPECTED_KEPT} expected)")
-EXPECTED_FOUNDP, EXPECTED_KEPTP = 2217, 690      # the same eager rounds with the presolve (the default, design.md 22.12.3): fewer, since the presolve empties many models of rows
+EXPECTED_FOUNDP, EXPECTED_KEPTP = 2452, 842      # (was 2217 and 690 before the root restarts, 22.15) the same eager rounds with the presolve (the default, design.md 22.12.3): fewer, since the presolve empties many models of rows
 if "--print" not in sys.argv and (FOUNDP, KEPTP) != (EXPECTED_FOUNDP, EXPECTED_KEPTP):
     fails.append(f"the eager rounds with the presolve found {FOUNDP} cuts and kept {KEPTP} on the validity instances (exactly {EXPECTED_FOUNDP} and {EXPECTED_KEPTP} expected)")
 if FOUND == 0:
