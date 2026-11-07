@@ -10,13 +10,13 @@ M = "lib/mip/mip.cho"
 C = "lib/mip/cmir.cho"
 MUTANTS = [
     # the copy of the old state
-    (R, "        wi[wi[9] + c] = owi[owi[9] + c];\n", "", "the position of each column is not copied"),
+    (R, "            wi[wi[9] + nc] = q;\n", "", "the position of each column is not copied"),
     (R, "        wi[wi[10] + c] = owi[owi[10] + c];\n", "", "the side of each nonbasic column is not copied"),
     (R, "        wf[wi[18] + c] = owf[owi[18] + c];\n", "", "the nonbasic values are not copied"),
-    (R, "    while c < n + mo {", "    while c < n {", "the old logicals are not copied"),
-    (R, "        wi[wi[8] + i] = owi[owi[8] + i];\n", "", "the old basis is not copied"),
-    (R, "        wf[wi[21] + i] = owf[owi[21] + i];\n", "", "the dual steepest-edge weights are not copied"),
-    (R, "    while i < mo {\n        wi[wi[8] + i]", "    while i < mo - 1 {\n        wi[wi[8] + i]", "the basis of the last old row is not copied"),
+    (R, "            if owi[owi[9] + n + i] < 0 {\n                wi[wi[10] + n + r] = owi[owi[10] + n + i];\n                wf[wi[18] + n + r] = owf[owi[18] + n + i];", "            if false {\n                wi[wi[10] + n + r] = owi[owi[10] + n + i];\n                wf[wi[18] + n + r] = owf[owi[18] + n + i];", "the side and the value of a nonbasic old logical are not copied"),
+    (R, "            wi[wi[8] + q] = nc;\n", "", "the old basis is not copied"),
+    (R, "            wf[wi[21] + q] = owf[owi[21] + p];\n", "", "the dual steepest-edge weights are not copied"),
+    (R, "    while p < mo {\n        let col = owi[owi[8] + p];", "    while p < mo - 1 {\n        let col = owi[owi[8] + p];", "the basis of the last old row is not copied"),
     (R, "    wi[32] = 0;\n    return refactor(wi, wf, fi, ff);\n}\n\n// The dual simplex from the current state.", "    wi[32] = 0;\n    return 0;\n}\n\n// The dual simplex from the current state.", "the warm state is not factorised"),
     # the rounds
     (M, "let usewarm = warm_on && have && !retry;", "let usewarm = false;", "every round is solved cold"),
@@ -26,7 +26,7 @@ MUTANTS = [
     (M, "if cc != sx.s_optimal() || mag(xcv[n] - xv[n]) > 1e-7 * (1.0 + mag(xv[n])) {", "if cc != sx.s_optimal() {", "the self-check does not compare the values"),
     (M, "        code = le.run(1, w, wi, fi, ff, st, m, n, 1000000000);", "        code = le.run(1, w, wi, fi, ff, st, m, n, 10);", "an LP of the rounds is stopped after 10 iterations"),
     (M, "        x[n] = objective_at(ints, fl, w, o_v);\n        fres[1] = sense_sign(ints) * x[n];", "        x[n] = 0.0;\n        fres[1] = 0.0;", "the value of the LP is not reported"),
-    (M, "                                        } else if round + 1 >= 300 || stall >= 150 {", "                                        } else if false {", "the last LP after the round limit is not solved"),
+    (M, "                                        } else if round + 1 >= rlim || stall >= stalllim {", "                                        } else if stall >= stalllim {", "the last LP after the round limit is not solved"),
     (M, "                                            if usewarm {\n                                                // no cut at this vertex", "                                            if false {\n                                                // no cut at this vertex", "a round that finds no cut at a warm vertex ends the rounds (no cold retry)"),
     (M, "                                                stats[83] = stats[83] + 1;\n", "", "the cold retries are not counted"),
     (M, "                                    stats[79] = stats[79] + stv[0];", "", "the iterations of the rounds are not counted"),
@@ -36,7 +36,7 @@ MUTANTS = [
     (C, "            age[r - m0] = age[r - m0] + 1;", "            age[r - m0] = age[r - m0] + 2;", "a slack cut ages two at a time"),
     (C, "        } else {\n            age[r - m0] = 0;\n        }", "        }", "a cut that is tight again keeps its age"),
     (C, "if r < mo && age[r - m0] >= limit && bas[r] == 1 {", "if r < mo && age[r - m0] >= limit {", "a row whose logical is nonbasic may leave"),
-    (C, "if r < mo && age[r - m0] >= limit && bas[r] == 1 {", "if age[r - m0] >= limit && bas[r] == 1 {", "the cuts just appended may leave too"),
+    (C, "if r < mo && age[r - m0] >= limit && bas[r] == 1 {", "if age[r - m0] >= limit && bas[r] == 1 {", "(equivalent) the cuts just appended may leave too; a cut just appended has age 0, under a limit of at least 1 (design.md 22.5, 22.14)"),
     (C, "                rmap[r] = w;\n", "                rmap[r] = r;\n", "a kept row is mapped to its old number"),
     (C, "            age[w - m0] = age[r - m0];\n", "", "the ages do not follow the rows"),
     (C, "        age[z - m0] = 0;\n", "        age[z - m0] = age[z - m0];\n", "the ages past the new end are not cleared"),

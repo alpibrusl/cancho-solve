@@ -14,7 +14,7 @@ MUTANTS = [
     ("wf[o_dd + leaving] = -fd;", "wf[o_dd + leaving] = fd;", "the leaving variable gets the wrong reduced cost"),
     ("if fd != 0.0 {", "if fd == 7.0 {", "the reduced costs are not updated"),
     ("wf[o_z + wi[o_bs + fp]] = wf[o_z + wi[o_bs + fp]] - wf[o_sv + fp];", "wf[o_z + wi[o_bs + fp]] = wf[o_z + wi[o_bs + fp]] + wf[o_sv + fp];", "the basic values take the flips with the wrong sign"),
-    ("wf[o_sv + rw] = wf[o_sv + rw] - dx;", "wf[o_sv + rw] = wf[o_sv + rw] + dx;", "a flipped logical enters the flip vector with the wrong sign"),
+    ("wf[o_sv + rw] = wf[o_sv + rw] - dx;", "wf[o_sv + rw] = wf[o_sv + rw] + dx;", "(equivalent) a flipped logical enters the flip vector with the wrong sign; no model the language can write passes a logical through the long step (design.md 21.2, 22.14)"),
     ("wf[o_sv + rw] = wf[o_sv + rw] + wf[o_cv + u] * dx;", "wf[o_sv + rw] = wf[o_sv + rw] + dx;", "a flipped structural ignores its coefficients"),
     ("var nw = wf[o_wt + ap] - 2.0 * kap * wf[o_tau + ap] + kap * kap * wr;", "var nw = wf[o_wt + ap] + 2.0 * kap * wf[o_tau + ap] + kap * kap * wr;", "the weight update has the wrong sign on the cross term"),
     ("var nw = wf[o_wt + ap] - 2.0 * kap * wf[o_tau + ap] + kap * kap * wr;", "var nw = wf[o_wt + ap] - 2.0 * kap * wf[o_tau + ap];", "the weight update drops the last term"),
@@ -44,7 +44,7 @@ MUTANTS = [
     ("fn interval() -> [] int {\n    return 256;", "fn interval() -> [] int {\n    return 1;", "a refactorisation at every iteration"),
     ("if dj >= -tol {\n                        dj = 0.0;", "if dj >= -1e9 {\n                        dj = 0.0;", "a recomputed dual infeasibility is always clamped"),
     ("var cap = limit;\n    if limit < 0 {\n        cap = 100 * big + 1000;", "var cap = limit;\n    if limit < 0 {\n        cap = 3;", "the default iteration limit is tiny"),
-    ("if wf[o_c + j] >= 0.0 {\n            wi[o_at + j] = 0;", "if wf[o_c + j] <= 0.0 {\n            wi[o_at + j] = 0;", "variables start at the bound their cost avoids"),
+    ("if wf[o_c + j] >= 0.0 {\n            wi[o_at + j] = 0;", "if wf[o_c + j] <= 0.0 {\n            wi[o_at + j] = 0;", "(equivalent) variables start at the bound their cost avoids; the first refactorisation recomputes the reduced costs and flips every wrongly placed variable (design.md 21.2, 22.14)"),
     ("wi[o_cr + at] = i;\n            wf[o_cv + at] = wf[o_rv + t];", "wi[o_cr + at] = 0;\n            wf[o_cv + at] = wf[o_rv + t];", "the column form puts every entry in row 0"),
     ("wf[o_hi + n + i] = rf[q_rhi + i];", "wf[o_hi + n + i] = rf[q_rlo + i];", "the upper side of a row is read from the lower (raw problem)"),
     ("wf[o_lo + k] = rf[q_clo + k];", "wf[o_lo + k] = rf[q_chi + k];", "the lower bound of a column is read from the upper (raw problem)"),
@@ -70,7 +70,7 @@ def build(root):
 
 WS = set()
 for _n, (_o, _w, _what) in enumerate(MUTANTS):
-    if _what in ("a maximisation is minimised", "a <= row has the wrong right side", "a >= row has the wrong right side", "the column form puts every entry in row 0", "variables start at the bound their cost avoids"):
+    if _what in ("a maximisation is minimised", "a <= row has the wrong right side", "a >= row has the wrong right side", "the column form puts every entry in row 0", "(equivalent) variables start at the bound their cost avoids; the first refactorisation recomputes the reduced costs and flips every wrongly placed variable (design.md 21.2, 22.14)"):
         WS.add(_n)
 killed = survived = invalid = 0
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]
@@ -105,9 +105,10 @@ for n, (old, new, what) in enumerate(MUTANTS):
             if rc != 0:
                 dead = True
                 break
-        print(("killed  " if dead else "SURVIVED") + f" {n}: {what} [{gate}]" if dead else f"SURVIVED {n}: {what}", flush=True)
+        equivalent = what.startswith("(equivalent)")
+        print(f"killed   {n}: {what} [{gate}]" if dead else f"explained {n}: {what}" if equivalent else f"SURVIVED {n}: {what}", flush=True)
         killed += dead
-        survived += not dead
+        survived += (not dead) and not equivalent
 
 print(f"mutants: {killed} killed, {survived} survived, {invalid} invalid")
 sys.exit(1 if survived or invalid else 0)

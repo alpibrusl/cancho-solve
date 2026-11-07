@@ -43,6 +43,7 @@ HAND = [
     ("fixed column", "var x : real 3..3;\nvar y : real 0..10;\nminimize y;\nsubject to\n    r: x + y <= 8;\n", "optimal", 0.0, (1, 2)),
     ("the chain of the EV model", "var c1 : real 0..11;\nvar c2 : real 0..11;\nvar o1 : real 0..1;\nvar o2 : real 0..1;\nminimize c1 + c2;\nsubject to\n"
      "    l1: c1 - 11*o1 <= 0;\n    l2: c2 - 11*o2 <= 0;\n    ch: o1 + o2 <= 2;\n    need: c1 + c2 >= 5;\n", "optimal", 5.0, (3, 2)),
+    ("fixed column that no side lets go", "var x : real 3..3;\nvar y : real 0..10;\nminimize x + y;\nsubject to\n    r: x + y >= 5;\n", "optimal", 5.0, (1, 2)),
     ("nothing to reduce", "var x : real 0..10;\nvar y : real 0..10;\nmaximize 3*x + 2*y;\nsubject to\n    c1: x + y <= 4;\n    c2: x + 3*y <= 6;\n", "optimal", 12.0, (0, 0)),
     ("reduced to nothing", "var x : real 0..5;\nmaximize x;\nsubject to\n    r: x <= 10;\n", "optimal", 5.0, (1, 1)),
 ]

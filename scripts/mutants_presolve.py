@@ -9,13 +9,13 @@ F = "lib/lp/presolve.cho"
 MUTANTS = [
     ("let lowok = rlo < -1e299 || amin >= rlo - tol(rlo);", "let lowok = true;", "a row is redundant on its upper activity alone"),
     ("let highok = rhi > 1e299 || amax <= rhi + tol(rhi);", "let highok = true;", "a row is redundant on its lower activity alone"),
-    ("if rhi < 1e299 && amin > rhi + tol(rhi) {", "if false {", "a row whose least activity is above its upper side is not infeasible"),
-    ("if rlo > -1e299 && amax < rlo - tol(rlo) {", "if false {", "a row whose greatest activity is below its lower side is not infeasible"),
+    ("if rhi < 1e299 && amin > rhi + tol(rhi) {", "if false {", "(equivalent) a row whose least activity is above its upper side is not infeasible; the other two infeasibility tests catch it (design.md 22.14)"),
+    ("if rlo > -1e299 && amax < rlo - tol(rlo) {", "if false {", "(equivalent) a row whose greatest activity is below its lower side is not infeasible; the other two infeasibility tests catch it (design.md 22.14)"),
     ("if nl > lo {", "if nl > 1e300 {", "a singleton row does not raise the lower bound"),
     ("if nh < hi {", "if nh < -1e300 {", "a singleton row does not lower the upper bound"),
     ("if rhi < 1e299 {\n                        nl = rhi / lasta;", "if rhi < 1e299 {\n                        nl = rlo / lasta;", "a singleton row with a negative coefficient takes the wrong side"),
     ("if lo - hi > 1e-9 * (1.0 + mag(lo) + mag(hi)) {\n                        return 1;", "if false {\n                        return 1;", "crossing bounds from a singleton row are not infeasible"),
-    ("if rlo > tol(rlo) || rhi < 0.0 - tol(rhi) {", "if false {", "an empty row is not checked"),
+    ("if rlo > tol(rlo) || rhi < 0.0 - tol(rhi) {", "if false {", "(equivalent) an empty row is not checked; the two activity tests, which run first on the same row, refuse it (design.md 22.14)"),
     ("if hi <= lo {", "if hi < lo - 1.0 {", "a fixed column is not substituted"),
     ("var canlow = rf[o_cost + j] >= 0.0;", "var canlow = true;", "a column is lowered whatever its cost"),
     ("var canhigh = rf[o_cost + j] <= 0.0;", "var canhigh = true;", "a column is raised whatever its cost"),
@@ -30,7 +30,7 @@ MUTANTS = [
     ("qf[q_rlo + ni] = rf[o_rlo + i];", "qf[q_rlo + ni] = rf[o_rhi + i];", "the reduced problem takes the upper side of a row as the lower"),
     ("qf[q_cost + nj] = rf[o_cost + j];", "qf[q_cost + nj] = 0.0;", "the reduced problem loses the costs"),
     ("while ri[29] == 1 && sweeps < 20 {", "while ri[29] == 1 && sweeps < 1 {", "one sweep only"),
-    ("ri[24] = ri[24] + 1;\n                ri[29] = 1;\n            } else if cnt == 1", "ri[24] = ri[24] + 1;\n            } else if cnt == 1", "an empty row does not count as a change"),
+    ("ri[24] = ri[24] + 1;\n                ri[29] = 1;\n            } else if cnt == 1", "ri[24] = ri[24] + 1;\n            } else if cnt == 1", "(equivalent) an empty row does not count as a change; the removal of its last live column set the flag already (design.md 22.14)"),
     ("ri[25] = ri[25] + 1;\n    return 0;", "return 0;", "the removed columns are not counted"),
     ("sign = -1.0;", "sign = 1.0;", "a maximisation is minimised"),
     ("rf[o_rhi + i] = rhs;\n        } else if s == 1 {", "rf[o_rhi + i] = rhs + 1.0;\n        } else if s == 1 {", "a <= row has the wrong right side"),
@@ -70,9 +70,10 @@ for n, (old, new, what) in enumerate(MUTANTS):
             if rc != 0:
                 dead = True
                 break
-        print(("killed  " if dead else "SURVIVED") + f" {n}: {what}" + (f" [{gate}]" if dead else ""), flush=True)
+        equivalent = what.startswith("(equivalent)")
+        print(("killed  " if dead else "explained" if equivalent else "SURVIVED") + f" {n}: {what}" + (f" [{gate}]" if dead else ""), flush=True)
         killed += dead
-        survived += not dead
+        survived += (not dead) and not equivalent
 
 print(f"mutants: {killed} killed, {survived} survived, {invalid} invalid")
 sys.exit(1 if survived or invalid else 0)

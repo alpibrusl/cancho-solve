@@ -36,12 +36,15 @@ CASES = [("page 24x16 (seed 7)", 7, ("optimal", 191.45, 3000, 286), ("feasible",
          ("24x16 seed 4", 4, ("feasible", 173.3, 30000, 472), ("feasible", 173.3, 30000), False),
          ("24x16 seed 6", 6, ("optimal", 195.8, 8400, 376), ("feasible", 196.02, 30000), True),
          ("24x16 seed 8", 8, ("optimal", 194.58, 8400, 373), ("feasible", 195.06, 30000), True)]
+# the iterations of the runs with the rounds, held exactly (a search that forgets the iterations it had done when it resumes after a pause reports fewer: mutants_cmir.py 54)
+ITERS = {7: 37271, 9: 40569, 4: 211085, 6: 69289, 8: 75921}
 for name, seed, on, off, strict in CASES:
     t = generate(24, 16, "tight", seed)
     a, b = run(t, 0), run(t, OFF)
     ga = (a["status"], round(a["objective"], 3), a["stats"]["nodes"], a["stats"]["prof"][77])
     gb = (b["status"], round(b["objective"], 3), b["stats"]["nodes"])
     need(ga == on, "%s: with the rounds %s, exactly %s expected" % (name, ga, on))
+    need(a["stats"]["iterations"] == ITERS[seed], "%s: %d iterations, exactly %d expected" % (name, a["stats"]["iterations"], ITERS[seed]))
     need(gb == off, "%s: without %s, exactly %s expected" % (name, gb, off))
     need(b["stats"]["prof"][77] == 0, "%s: bit 4194304 still runs %d rounds in the sub-MIPs" % (name, b["stats"]["prof"][77]))
     better = a["objective"] < b["objective"] - 1e-9 or (a["status"] == "optimal" and b["status"] == "optimal" and a["stats"]["nodes"] < b["stats"]["nodes"]) or (a["status"] == "optimal" and b["status"] != "optimal")

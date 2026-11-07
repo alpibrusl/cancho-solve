@@ -50,6 +50,26 @@ EXPECTED = {
     'mixed seed 4': (3, 1, 15, 7, 0),
     'mixed seed 5': (3, 11, 14, 9, 0),
 }
+# the same instances without the presolve (bit 33554432, design.md 22.12.3), as measured before it became the default: the warm load then copies the values of columns the presolve would have fixed
+EXPECTED_NP = {
+    'tight 6x8': (23, 68, 333, 1343, 0),
+    'tight 8x10': (39, 218, 1058, 7415, 0),
+    'tight 10x12': (132, 687, 5088, 45939, 0),
+    'tight 12x12': (122, 803, 7341, 55084, 0),
+    'tight 8x10 cap1': (39, 218, 1058, 7415, 0),
+    'tight 10x12 cap1': (140, 733, 2467, 42373, 417),
+    'tight 12x12 cap1': (155, 968, 7601, 63238, 511),
+    'facility 6/8 seed 1': (1, 0, 21, 0, 0),
+    'facility 6/8 seed 2': (3, 9, 44, 22, 0),
+    'facility 6/8 seed 3': (8, 65, 71, 180, 0),
+    'mixed seed 0': (1, 0, 10, 0, 0),
+    'mixed seed 1': (1, 0, 10, 0, 0),
+    'mixed seed 2': (4, 4, 32, 30, 0),
+    'mixed seed 3': (4, 5, 29, 27, 0),
+    'mixed seed 4': (3, 1, 17, 8, 0),
+    'mixed seed 5': (6, 19, 41, 61, 0),
+}
+NOPRE = 33554432
 PRINT = "--print" in sys.argv
 AGING = 65536        # experiment bit: cuts age out (opt-in, design.md 22.5; the default keeps every cut)
 CAP1 = 131072        # the cut rows may not outnumber the model's own rows before aged ones leave (the default is twice)
@@ -64,24 +84,25 @@ for s in range(6):
     models.append(("mixed seed %d" % s, mixed(s)))
 
 warm_total = 0
-for name, text in models:
-    d, p = prof(text, 256 + 512 + 128 + (AGING + CAP1 if name.endswith("cap1") else 0))
-    if p is None:
-        need(False, "%s: no profile in the report (%s)" % (name, d.get("status")))
-        continue
-    rounds, iters, warm, bad, cold = p[66], p[69], p[70], p[71], p[72]
-    if PRINT:
-        print("    %r: (%d, %d, %d, %d, %d)," % (name, rounds, p[67], iters, cold, p[74]))
-    need(EXPECTED.get(name) == (rounds, p[67], iters, cold, p[74]), "%s: (rounds, found, iterations, cold iterations, rows removed) = %s, exactly %s expected" % (name, (rounds, p[67], iters, cold, p[74]), EXPECTED.get(name)))
-    warm_total += warm
-    need(bad == 0, "%s: %d of %d warm solves disagree with the cold solve" % (name, bad, warm))
-    retries = p[73]
-    need(warm == rounds - 1 - retries, "%s: %d warm solves in %d rounds with %d cold retries (all but the first and the retries are warm)" % (name, warm, rounds, retries))
-    if name in ("tight 10x12", "tight 12x12"):
-        need(rounds > 20, "%s: only %d rounds, the instance no longer exercises the claim" % (name, rounds))
-        need(iters * 5 <= cold, "%s: warm %d iterations against cold %d (at most a fifth required)" % (name, iters, cold))
-        d1, p1 = prof(text, 256 + 1024 + 128)
-        need(p1 is not None and p1[70] == 0 and p1[69] >= 5 * iters, "%s: bit 1024 does not give the cold counts (%s)" % (name, p1 and (p1[69], p1[70])))
+for pre, EXP in ((0, EXPECTED), (NOPRE, EXPECTED_NP)):
+  for name, text in models:
+      d, p = prof(text, 256 + 512 + 128 + (AGING + CAP1 if name.endswith("cap1") else 0) + pre)
+      if p is None:
+          need(False, "%s: no profile in the report (%s)" % (name, d.get("status")))
+          continue
+      rounds, iters, warm, bad, cold = p[66], p[69], p[70], p[71], p[72]
+      if PRINT:
+          print("    %r: (%d, %d, %d, %d, %d)," % (name, rounds, p[67], iters, cold, p[74]))
+      need(EXP.get(name) == (rounds, p[67], iters, cold, p[74]), ("no presolve " if pre else "") + "%s: (rounds, found, iterations, cold iterations, rows removed) = %s, exactly %s expected" % (name, (rounds, p[67], iters, cold, p[74]), EXP.get(name)))
+      warm_total += warm
+      need(bad == 0, "%s: %d of %d warm solves disagree with the cold solve" % (name, bad, warm))
+      retries = p[73]
+      need(warm == rounds - 1 - retries, "%s: %d warm solves in %d rounds with %d cold retries (all but the first and the retries are warm)" % (name, warm, rounds, retries))
+      if name in ("tight 10x12", "tight 12x12") and not pre:
+          need(rounds > 20, "%s: only %d rounds, the instance no longer exercises the claim" % (name, rounds))
+          need(iters * 5 <= cold, "%s: warm %d iterations against cold %d (at most a fifth required)" % (name, iters, cold))
+          d1, p1 = prof(text, 256 + 1024 + 128)
+          need(p1 is not None and p1[70] == 0 and p1[69] >= 5 * iters, "%s: bit 1024 does not give the cold counts (%s)" % (name, p1 and (p1[69], p1[70])))
 need(warm_total > 0, "no warm solve ran on any instance")
 
 # G4 aging (design.md 22.5): rows leave on the tight models with the cap of one and on 24 x 16 with the defaults, and never when bit 65536 keeps every cut
