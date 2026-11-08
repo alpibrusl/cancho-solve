@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutants of the Gomory cuts (lib/mip/gomory.cho and cmir.pool_push, docs/design.md 22.18), judged by scripts/check_gomory.py with QUICK=1 (the small models). Each mutant is built in a scratch copy of
+"""Mutants of the Gomory cuts (lib/mip/gomory.cho and cmir.pool_push, docs/design.md 22.18 and 22.19), judged by scripts/check_gomory.py with QUICK=1 (the small models). Each mutant is built in a scratch copy of
 the repository and is killed when the gate fails; one that builds and passes is a survivor and must be explained in design.md. Needs CANCHO=the compiler and build/lab.
 Usage: CANCHO=... python3 scripts/mutants_gomory.py   (ONLY=3,4 to run some)"""
 import os, shutil, subprocess, sys, tempfile
@@ -7,6 +7,7 @@ import os, shutil, subprocess, sys, tempfile
 CANCHO = os.environ["CANCHO"]
 G = "lib/mip/gomory.cho"
 P = "lib/mip/cmir.cho"
+M = "lib/mip/mip.cho"
 MUTANTS = [
     (G, "                        sg = cj;\n", "                        sg = 0.0 - cj;\n", "the upper-bound substitution has the sign of the lower"),
     (G, "                    aj = 0.0 - abar;\n", "                    aj = abar;\n", "a column at its upper bound keeps the sign of abar"),
@@ -17,7 +18,7 @@ MUTANTS = [
     (G, "                        cj = aj / f0;\n", "                        cj = aj / (1.0 - f0);\n", "a continuous column with a_j > 0 is divided by 1 - f0"),
     (G, "                        cj = (0.0 - aj) / (1.0 - f0);\n", "                        cj = (0.0 - aj) / f0;\n", "a continuous column with a_j < 0 is divided by f0"),
     (G, "                        rhs = rhs + sg * bnd;\n", "                        rhs = rhs - sg * bnd;\n", "the bound goes to the right side with the wrong sign"),
-    (G, "    var rhs = 0.0 - 1.0;\n", "    var rhs = 0.0 - 0.5;\n", "(equivalent for validity) the cut asks for half: sum c t >= 1/2 is implied by the cut, a weaker one, and the gate judges validity"),
+    (G, "    var rhs = 0.0 - 1.0;\n", "    var rhs = 0.0 - 0.5;\n", "(equivalent) the cut asks for half: sum c t >= 1/2 is implied by the cut, a weaker one, and the gate judges validity"),
     (G, "                    if j < n && si[j] == 1 && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {\n", "                    if si[j % n] == 1 && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {\n", "a logical is taken as the integer column j mod n"),
     (G, "                    if j < n && si[j] == 1 && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {\n", "                    if j < n && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {\n", "every structural column is taken as integer"),
     (G, "                    if j < n && si[j] == 1 && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {\n", "                    if j < n && si[j] == 1 {\n", "(equivalent) an integer column's bound is not tested for being an integer: the models of the gate have integer bounds"),
@@ -27,6 +28,13 @@ MUTANTS = [
     (G, "                            var t = ints[l.row_start(j - n)];\n", "                            var t = ints[l.row_start(j - n)] + 1;\n", "a logical's row loses its first term"),
     (P, "    sf[o_prhs(n, mcap) + npool] = rhs;\n", "    sf[o_prhs(n, mcap) + npool] = rhs - 0.5;\n", "the pool's right side is made stronger"),
     (P, "        let cv = g[goff + j];\n", "        let cv = g[j];\n", "the cut is read from the start of the work slice"),
+    (G, "            if count[200] + nz <= count[201] {\n", "            if count[200] + nz <= 2 * count[201] {\n", "the budget is tested against twice itself"),
+    (G, "            if count[200] + nz <= count[201] {\n", "            if count[200] + nz < count[201] {\n", "(equivalent) a cut that fills the budget exactly is refused: the gate's budgets are never met to the nonzero"),
+    (G, "        if count[201] > 0 {\n            let kept", "        if count[201] > 1000000000 {\n            let kept", "the budget is never applied"),
+    (G, "                let sc = sf[pe + k] / float_of(si[ps + k + 1] - si[ps + k]);\n", "                let sc = sf[pe + k] * float_of(si[ps + k + 1] - si[ps + k]);\n", "(equivalent) cuts are ranked by efficacy times nonzeros, not per nonzero: the order is a choice measured in 22.19's results, and no gate on a bound or a count can tell it"),
+    (G, "                count[96] = count[96] - 1;\n", "", "(equivalent) a cut left out is still counted as pooled: the count is only reported, the cuts taken are the same, and no gate on a bound or a nonzero count sees it"),
+    (M, "&& (opts[4] / 4294967296 % 8 == 0 || stats[200] < opts[4] / 4294967296 % 8 * ints2[l.row_start(m0)])", "", "(equivalent) the block runs on after the budget is spent: it only tries rows, and none fits"),
+    (M, "stats[201] = opts[4] / 4294967296 % 8 * ints2[l.row_start(m0)];", "stats[201] = opts[4] / 4294967296 % 8 * ints2[l.row_start(ints2[l.h_ncons()])];", "the budget is read after the cuts, so it grows with them"),
 ]
 
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]

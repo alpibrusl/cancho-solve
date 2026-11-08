@@ -23,6 +23,8 @@ MUTANTS = [
     (M, "                    if good && !(named && raw) {\n", "                    if good {\n", "--exp and --experiment may be given together"),
     (M, "&& !named && exper.parse", "&& exper.parse", "--exp may be given twice"),
     (E, "                bits = bits + bit_of(which) * (v + offset_of(which));\n", "                bits = bit_of(which) * (v + offset_of(which));\n", "a field drops the bits before it"),
+    (E, "    if (seen / pow2(20)) % 2 == 1 && (seen / pow2(19)) % 2 == 0 {\n        return 0 - 1;\n    }\n", "", "gomory-nnz is accepted without gomory"),
+    (E, "        return 4294967296;\n", "        return 2147483648;\n", "gomory-nnz names the bit of gomory"),
 ]
 
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]

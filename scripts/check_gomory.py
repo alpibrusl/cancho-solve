@@ -5,6 +5,8 @@ G1 valid: on 8 tight EV models (6 x 8 to 12 x 12, seeds 1 and 2), 3 facility-loc
    the rounds (`--node-limit 1`, eager rounds) is never beyond the optimum by more than 1e-7 relative: a cut that cuts off the optimal point fails here.
 G2 exercised: `stats.gomory` = [rows tried, cuts pooled] is present with the name, absent without it, and pooled > 0 on at least five of the models (a gate on a separator that finds nothing would pass anything).
 G3 deterministic: two runs, the same bytes.
+G5 (22.19) the budget `gomory-nnz=K`: valid (G1 again with K = 1 and 7, the random models too), `stats.gomory` = [tried, pooled, nonzeros, budget] with a budget and still [tried, pooled] without, nonzeros <= budget on every model,
+   budget = K * nnz(A) read from `solve check` (with `no-presolve,no-objective-cut,no-implied`: the rows `check` counts; the objective's cutoff row and the implied cuts are in the LP by default and add their nonzeros), and the budget binds: K = 1 pools fewer nonzeros than K = 7 on at least three models (a budget never reached cannot fail).
 G4 off is off: without the name the reports are the bytes of `--experiment` without the bit (the same build), and the nodes of two models are held at the counts of check_restart.py (tight 10 x 12 seed 1: 2,759;
    tight 12 x 12 seed 1: 320), measured before this build.
 Needs scipy. Usage: SOLVE=build/solve LAB=build/lab python3 scripts/check_gomory.py [--print]"""
@@ -91,6 +93,43 @@ for name, text in models:
     r0, d0 = run(text, "eager-rounds", 1)
     need(d0 is not None and "gomory" not in d0["stats"], "%s: stats.gomory present without the name" % name)
 need(pooled_models >= 5, "cuts pooled on only %d models" % pooled_models)
+
+# G5 (22.19)
+binds = 0
+for name, text in models:
+    if name.startswith("random") and int(name.split()[-1]) % 10:
+        continue                       # every tenth random model keeps the run short
+    hs, hv = highs(text)
+    nnz = json.loads(subprocess.run([SOLVE, "check"], input=text, capture_output=True, text=True).stdout).get("nonzeros")
+    used = {}
+    for K in (1, 7):
+        spec = "gomory,gomory-nnz=%d" % K
+        raw, d = run(text, spec, 200000)
+        if hs == "optimal":
+            need(d is not None and d["status"] == "optimal" and abs(d["objective"] - hv) <= 1e-6 * (1 + abs(hv)), "%s K=%d: with the budget %s, HiGHS %s" % (name, K, d and (d["status"], d.get("objective")), hv))
+        else:
+            need(d is not None and d["status"] == "infeasible", "%s K=%d: %s, an infeasible model stays infeasible" % (name, K, d and d["status"]))
+        raw1, d1 = run(text, spec + ",eager-rounds,no-presolve,no-objective-cut,no-implied", 1)
+        if d1 and hs == "optimal" and "bound" in d1:
+            tol = 1e-7 * (1 + abs(hv))
+            need(d1["bound"] >= hv - tol if "maximize" in text else d1["bound"] <= hv + tol, "%s K=%d: root bound %s beyond the optimum %s" % (name, K, d1["bound"], hv))
+        g = d1["stats"].get("gomory") if d1 else None
+        if g is not None:
+            need(len(g) == 4 and g[3] == K * nnz and g[2] <= g[3], "%s K=%d: stats.gomory %s, budget %s expected, nonzeros within it" % (name, K, g, K * nnz))
+            used[K] = g[2]
+        else:
+            need(hs != "optimal" or name.startswith("random"), "%s K=%d: no stats.gomory" % (name, K))
+        raw2, _ = run(text, spec + ",eager-rounds,no-presolve,no-objective-cut,no-implied", 1)
+        need(raw1 == raw2, "%s K=%d: two runs differ" % (name, K))
+    if 1 in used and 7 in used and used[1] < used[7]:
+        binds += 1
+need(binds >= 3, "the budget bound the cuts of only %d models (K = 1 against 7)" % binds)
+
+# G4 (22.19): `gomory` alone is the bytes of 22.18 (md5 of the report with --node-limit 300, from the build of commit de35015, before the budget)
+import hashlib
+for (v, t, sd), md in {(6, 8, 1): "994e60b750ac3a439991799d0bcc2963", (8, 10, 1): "79c148bb8389478886312d573c08d3fc", (8, 10, 2): "c543b79da12beddd5698d40265428459"}.items():
+    raw, d = run(lab(v, t, sd), "gomory", 300)
+    need(hashlib.md5(raw.encode()).hexdigest() == md, "tight %dx%d seed %d: `gomory` alone is not the bytes of 22.18" % (v, t, sd))
 
 # G4
 for (v, t, s), nodes in ([] if QUICK else [((10, 12, 1), 2759), ((12, 12, 1), 320)]):

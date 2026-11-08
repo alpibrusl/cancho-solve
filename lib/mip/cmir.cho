@@ -80,7 +80,7 @@ fn o_taken(n: int, nnzcap: int) -> [] int {
     return o_used(n, nnzcap) + 16;
 }
 
-fn o_ps(n: int, nnzcap: int) -> [] int {
+pub fn o_ps(n: int, nnzcap: int) -> [] int {
     return o_taken(n, nnzcap) + 320;
 }
 
@@ -100,7 +100,7 @@ fn o_prhs(n: int, mcap: int) -> [] int {
     return o_pf(n, mcap) + pnnz();
 }
 
-fn o_peff(n: int, mcap: int) -> [] int {
+pub fn o_peff(n: int, mcap: int) -> [] int {
     return o_prhs(n, mcap) + pcut();
 }
 

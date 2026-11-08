@@ -524,6 +524,10 @@ pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, te
         w = json.begin_array(heap, w);
         w = json.put_int(heap, w, stats[95]);
         w = json.put_int(heap, w, stats[96]);
+        if stats[201] > 0 {
+            w = json.put_int(heap, w, stats[200]);
+            w = json.put_int(heap, w, stats[201]);
+        }
         w = json.end_array(heap, w);
     }
     if len(stats) >= 208 && stats[99] > 0 {
