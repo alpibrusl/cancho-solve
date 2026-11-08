@@ -19,7 +19,7 @@ TABLE = [
     ("no-objective-cut", 1, 0, 0, 0), ("no-rounding", 2, 0, 0, 0), ("plunge-far", 4, 0, 0, 0), ("no-implied", 8, 0, 0, 0), ("no-rc-fixing", 16, 0, 0, 0), ("no-pause", 32, 0, 0, 0),
     ("no-mir", 64, 0, 0, 0), ("profile", 128, 0, 0, 0), ("eager-rounds", 256, 0, 0, 0), ("warm-check", 512, 0, 0, 0), ("cold-rounds", 1024, 0, 0, 0),
     ("aging-limit", 4096, 1, 15, 0), ("aging", 65536, 0, 0, 0), ("cap", 131072, 1, 7, 0), ("restore-root", 2097152, 0, 0, 0), ("sub-plain", 4194304, 0, 0, 0),
-    ("no-presolve", 33554432, 0, 0, 0), ("restarts", 134217728, 0, 14, 1), ("trace", 67108864, 0, 0, 0),
+    ("no-presolve", 33554432, 0, 0, 0), ("restarts", 134217728, 0, 14, 1), ("trace", 67108864, 0, 0, 0), ("gomory", 2147483648, 0, 0, 0),
 ]
 
 

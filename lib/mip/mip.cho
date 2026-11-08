@@ -10,6 +10,7 @@ module solve.mip;
 
 import solve.cmir as cm;
 import solve.cuts as cu;
+import solve.gomory as gm;
 import solve.heur as hu;
 import solve.layout as l;
 import solve.lpeng as le;
@@ -1600,8 +1601,6 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             }
                                         }
                                     }
-                                    unbox_slice(heap, nff);
-                                    unbox_slice(heap, nfi);
                                     stats[79] = stats[79] + stv[0];
                                     if usewarm {
                                         stats[80] = stats[80] + 1;
@@ -1659,7 +1658,20 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             stall = 0;
                                         }
                                         last = fv[1];
-                                        let np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
+                                        var np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
+                                        if opts[4] / 2147483648 % 2 == 1 && !small && pseed == 0 && round < 15 {
+                                            // experiment `gomory` (design.md 22.18): cuts from the tableau rows of this LP's basis join the pool
+                                            stats[94] = 1;
+                                            borrow pwi as &g1 in {
+                                                borrow pw as &g2 in {
+                                                    borrow nfi as &g3 in {
+                                                        borrow mut nff as &!g4 in {
+                                                            np = gm.separate(heap, ints2, fl2, contents(g1), contents(g2), contents(g3), contents(g4), xv, siv, sfv, stats, n, nnzcap, mcap, np, 30);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         found = found + np;
                                         var taken = 0;
                                         var pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np, taken);
@@ -1693,6 +1705,8 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             fin = true;
                                         }
                                     }
+                                    unbox_slice(heap, nff);
+                                    unbox_slice(heap, nfi);
                                 }
                                 round = round + 1;
                             }
