@@ -1,0 +1,434 @@
+edition 7;
+
+module solve.exper;
+
+// The experiment bits of `solve run --experiment N`, by name (docs/design.md 22.18): `--exp profile,restarts=3` is `--experiment 134217856` (128 + 134217728 * 4). One table, read by the parser
+// and by `solve introspect`; `scripts/check_exp.py` holds its own copy of the table and compares. A flag is one bit (max 0); a field is `bit * (value + offset)` for a value from min to max.
+// What each one does is written where it is read (`lib/mip/mip.cho`, `docs/design.md` 19 and 22). An experiment that is built and then reverted leaves no name here.
+
+import std.bytes;
+import std.json;
+
+pub fn count() -> [] int {
+    return 21;
+}
+
+pub fn name_of(k: int) -> [] &static [byte] {
+    if k == 0 {
+        return "no-objective-cut";
+    }
+    if k == 1 {
+        return "no-rounding";
+    }
+    if k == 2 {
+        return "plunge-far";
+    }
+    if k == 3 {
+        return "no-implied";
+    }
+    if k == 4 {
+        return "no-rc-fixing";
+    }
+    if k == 5 {
+        return "no-pause";
+    }
+    if k == 6 {
+        return "no-mir";
+    }
+    if k == 7 {
+        return "profile";
+    }
+    if k == 8 {
+        return "eager-rounds";
+    }
+    if k == 9 {
+        return "warm-check";
+    }
+    if k == 10 {
+        return "cold-rounds";
+    }
+    if k == 11 {
+        return "aging-limit";
+    }
+    if k == 12 {
+        return "aging";
+    }
+    if k == 13 {
+        return "cap";
+    }
+    if k == 14 {
+        return "restore-root";
+    }
+    if k == 15 {
+        return "sub-plain";
+    }
+    if k == 16 {
+        return "no-presolve";
+    }
+    if k == 17 {
+        return "restarts";
+    }
+    if k == 18 {
+        return "trace";
+    }
+    if k == 19 {
+        return "gomory";
+    }
+    if k == 20 {
+        return "gomory-nnz";
+    }
+    return "";
+}
+
+pub fn bit_of(k: int) -> [] int {
+    if k == 0 {
+        return 1;
+    }
+    if k == 1 {
+        return 2;
+    }
+    if k == 2 {
+        return 4;
+    }
+    if k == 3 {
+        return 8;
+    }
+    if k == 4 {
+        return 16;
+    }
+    if k == 5 {
+        return 32;
+    }
+    if k == 6 {
+        return 64;
+    }
+    if k == 7 {
+        return 128;
+    }
+    if k == 8 {
+        return 256;
+    }
+    if k == 9 {
+        return 512;
+    }
+    if k == 10 {
+        return 1024;
+    }
+    if k == 11 {
+        return 4096;
+    }
+    if k == 12 {
+        return 65536;
+    }
+    if k == 13 {
+        return 131072;
+    }
+    if k == 14 {
+        return 2097152;
+    }
+    if k == 15 {
+        return 4194304;
+    }
+    if k == 16 {
+        return 33554432;
+    }
+    if k == 17 {
+        return 134217728;
+    }
+    if k == 18 {
+        return 67108864;
+    }
+    if k == 19 {
+        return 2147483648;
+    }
+    if k == 20 {
+        return 4294967296;
+    }
+    return 0;
+}
+
+pub fn min_of(k: int) -> [] int {
+    if k == 0 {
+        return 0;
+    }
+    if k == 1 {
+        return 0;
+    }
+    if k == 2 {
+        return 0;
+    }
+    if k == 3 {
+        return 0;
+    }
+    if k == 4 {
+        return 0;
+    }
+    if k == 5 {
+        return 0;
+    }
+    if k == 6 {
+        return 0;
+    }
+    if k == 7 {
+        return 0;
+    }
+    if k == 8 {
+        return 0;
+    }
+    if k == 9 {
+        return 0;
+    }
+    if k == 10 {
+        return 0;
+    }
+    if k == 11 {
+        return 1;
+    }
+    if k == 12 {
+        return 0;
+    }
+    if k == 13 {
+        return 1;
+    }
+    if k == 14 {
+        return 0;
+    }
+    if k == 15 {
+        return 0;
+    }
+    if k == 16 {
+        return 0;
+    }
+    if k == 17 {
+        return 0;
+    }
+    if k == 20 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn max_of(k: int) -> [] int {
+    if k == 0 {
+        return 0;
+    }
+    if k == 1 {
+        return 0;
+    }
+    if k == 2 {
+        return 0;
+    }
+    if k == 3 {
+        return 0;
+    }
+    if k == 4 {
+        return 0;
+    }
+    if k == 5 {
+        return 0;
+    }
+    if k == 6 {
+        return 0;
+    }
+    if k == 7 {
+        return 0;
+    }
+    if k == 8 {
+        return 0;
+    }
+    if k == 9 {
+        return 0;
+    }
+    if k == 10 {
+        return 0;
+    }
+    if k == 11 {
+        return 15;
+    }
+    if k == 12 {
+        return 0;
+    }
+    if k == 13 {
+        return 7;
+    }
+    if k == 14 {
+        return 0;
+    }
+    if k == 15 {
+        return 0;
+    }
+    if k == 16 {
+        return 0;
+    }
+    if k == 17 {
+        return 14;
+    }
+    if k == 20 {
+        return 7;
+    }
+    return 0;
+}
+
+pub fn offset_of(k: int) -> [] int {
+    if k == 0 {
+        return 0;
+    }
+    if k == 1 {
+        return 0;
+    }
+    if k == 2 {
+        return 0;
+    }
+    if k == 3 {
+        return 0;
+    }
+    if k == 4 {
+        return 0;
+    }
+    if k == 5 {
+        return 0;
+    }
+    if k == 6 {
+        return 0;
+    }
+    if k == 7 {
+        return 0;
+    }
+    if k == 8 {
+        return 0;
+    }
+    if k == 9 {
+        return 0;
+    }
+    if k == 10 {
+        return 0;
+    }
+    if k == 11 {
+        return 0;
+    }
+    if k == 12 {
+        return 0;
+    }
+    if k == 13 {
+        return 0;
+    }
+    if k == 14 {
+        return 0;
+    }
+    if k == 15 {
+        return 0;
+    }
+    if k == 16 {
+        return 0;
+    }
+    if k == 17 {
+        return 1;
+    }
+    return 0;
+}
+
+// A non-negative decimal number of at most 9 digits, or -1.
+fn number[&a](text: &a [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var v = 0;
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c < '0' || c > '9' {
+            return 0 - 1;
+        }
+        v = v * 10 + (c - '0');
+        k = k + 1;
+    }
+    return v;
+}
+
+// The bits of a list `name[=value],name[=value],...`, or -1: `gomory-nnz` without `gomory` (22.19), an unknown name, an empty one, a name twice, a flag with a value, a field without one or out of its range.
+pub fn parse[&a](text: &a [byte]) -> [] int {
+    if len(text) == 0 {
+        return 0 - 1;
+    }
+    var bits = 0;
+    var seen = 0;
+    var from = 0;
+    var at = 0;
+    while at <= len(text) {
+        if at == len(text) || int_of(text[at]) == ',' {
+            let tok = text[from..at];
+            var eq = 0 - 1;
+            var q = 0;
+            while q < len(tok) {
+                if int_of(tok[q]) == '=' && eq < 0 {
+                    eq = q;
+                }
+                q = q + 1;
+            }
+            var nm = tok;
+            if eq >= 0 {
+                nm = tok[0..eq];
+            }
+            var which = 0 - 1;
+            var k = 0;
+            while k < count() {
+                if bytes.equal(nm, name_of(k)) {
+                    which = k;
+                }
+                k = k + 1;
+            }
+            if which < 0 || (seen / pow2(which)) % 2 == 1 {
+                return 0 - 1;
+            }
+            seen = seen + pow2(which);
+            if max_of(which) == 0 {
+                if eq >= 0 {
+                    return 0 - 1;
+                }
+                bits = bits + bit_of(which);
+            } else {
+                if eq < 0 {
+                    return 0 - 1;
+                }
+                let v = number(tok[eq + 1..len(tok)]);
+                if v < min_of(which) || v > max_of(which) {
+                    return 0 - 1;
+                }
+                bits = bits + bit_of(which) * (v + offset_of(which));
+            }
+            from = at + 1;
+        }
+        at = at + 1;
+    }
+    if (seen / pow2(20)) % 2 == 1 && (seen / pow2(19)) % 2 == 0 {
+        return 0 - 1;
+    }
+    return bits;
+}
+
+fn pow2(k: int) -> [] int {
+    return 1 << k;
+}
+
+// `"experiments":[{"name","bit","min","max","offset"},...]` for `solve introspect`.
+pub fn put_table[&h](heap: &!h Heap, w: json.Writer) -> [heap] json.Writer {
+    var out = json.put_key(heap, w, "experiments");
+    out = json.begin_array(heap, out);
+    var k = 0;
+    while k < count() {
+        out = json.begin_object(heap, out);
+        out = json.put_key(heap, out, "name");
+        out = json.put_string(heap, out, name_of(k));
+        out = json.put_key(heap, out, "bit");
+        out = json.put_int(heap, out, bit_of(k));
+        out = json.put_key(heap, out, "min");
+        out = json.put_int(heap, out, min_of(k));
+        out = json.put_key(heap, out, "max");
+        out = json.put_int(heap, out, max_of(k));
+        out = json.put_key(heap, out, "offset");
+        out = json.put_int(heap, out, offset_of(k));
+        out = json.end_object(heap, out);
+        k = k + 1;
+    }
+    return json.end_array(heap, out);
+}
