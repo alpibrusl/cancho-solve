@@ -10,7 +10,7 @@ import std.bytes;
 import std.json;
 
 pub fn count() -> [] int {
-    return 18;
+    return 19;
 }
 
 pub fn name_of(k: int) -> [] &static [byte] {
@@ -67,6 +67,9 @@ pub fn name_of(k: int) -> [] &static [byte] {
     }
     if k == 17 {
         return "restarts";
+    }
+    if k == 18 {
+        return "trace";
     }
     return "";
 }
@@ -126,12 +129,18 @@ pub fn bit_of(k: int) -> [] int {
     if k == 17 {
         return 134217728;
     }
+    if k == 18 {
+        return 67108864;
+    }
     return 0;
 }
 
 pub fn min_of(k: int) -> [] int {
     if k == 0 {
+        if k == 18 {
         return 0;
+    }
+    return 0;
     }
     if k == 1 {
         return 0;
@@ -189,7 +198,10 @@ pub fn min_of(k: int) -> [] int {
 
 pub fn max_of(k: int) -> [] int {
     if k == 0 {
+        if k == 18 {
         return 0;
+    }
+    return 0;
     }
     if k == 1 {
         return 0;
@@ -247,7 +259,10 @@ pub fn max_of(k: int) -> [] int {
 
 pub fn offset_of(k: int) -> [] int {
     if k == 0 {
+        if k == 18 {
         return 0;
+    }
+    return 0;
     }
     if k == 1 {
         return 0;
