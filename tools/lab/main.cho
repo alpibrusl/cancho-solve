@@ -1,0 +1,382 @@
+edition 7;
+
+// `lab` -- what the experiments of docs/design.md need and used to take from Python (section 22.18). Not a user verb of `solve`.
+//
+//     lab gen ev V T ample|tight SEED     the EV-depot model of scripts/evgen.py, byte for byte, for V vehicles and T slots
+//
+// The model is printed on standard output. The same numbers as `random.Random(SEED * 1000003 + V * 101 + T)` give in Python: Mersenne Twister (init_by_array, genrand_uint32),
+// `randrange` by rejection on `getrandbits`, `random()` of 53 bits, `uniform`, `round` to even. A refusal is JSON on standard error (`lab.usage`), exit status 2,
+// nothing on standard output. `scripts/check_lab.py` holds the bytes against evgen.py.
+
+import std.bytes;
+import std.io;
+
+fn refuse[&i, &a, &b](io: &!i Io, tag: &a [byte], message: &b [byte]) -> [err_write] int {
+    io.error_all(io, "{\"error\":\"");
+    io.error_all(io, tag);
+    io.error_all(io, "\",\"message\":\"");
+    io.error_all(io, message);
+    io.error_all(io, "\",\"repair\":\"lab gen ev V T ample|tight SEED, with V from 1 to 1000, T from 2 to 1000 and SEED from 0 to 1000000000\"}\n");
+    return 2;
+}
+
+// A non-negative decimal number, or -1.
+fn parse_count[&a](text: &a [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 12 {
+        return 0 - 1;
+    }
+    var v = 0;
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c < '0' || c > '9' {
+            return 0 - 1;
+        }
+        v = v * 10 + (c - '0');
+        k = k + 1;
+    }
+    return v;
+}
+
+// ---- Mersenne Twister, as Python's `random` module seeds and runs it. State: mt[0..624] the words, mt[624] the index.
+
+fn mask32() -> [] int {
+    return 0xffffffff;
+}
+
+fn init_genrand[&m](mt: &!m [int], s: int) -> [] int {
+    mt[0] = s & mask32();
+    var i = 1;
+    while i < 624 {
+        let p = mt[i - 1];
+        mt[i] = (1812433253 * (p ^ (p >> 30)) + i) & mask32();
+        i = i + 1;
+    }
+    mt[624] = 624;
+    return 0;
+}
+
+// Python's `random.seed(n)` for an integer n >= 0: init_by_array on the 32-bit limbs of n, low first (one limb for n < 2^32, else two; n < 2^62 here).
+fn seed_python[&m](mt: &!m [int], n: int) -> [] int {
+    var klen = 1;
+    if n >= 4294967296 {
+        klen = 2;
+    }
+    init_genrand(mt, 19650218);
+    var i = 1;
+    var j = 0;
+    var k = 624;
+    if klen > k {
+        k = klen;
+    }
+    while k > 0 {
+        var key = n & mask32();
+        if j == 1 {
+            key = (n >> 32) & mask32();
+        }
+        let p = mt[i - 1];
+        mt[i] = ((mt[i] ^ ((p ^ (p >> 30)) * 1664525)) + key + j) & mask32();
+        i = i + 1;
+        j = j + 1;
+        if i >= 624 {
+            mt[0] = mt[623];
+            i = 1;
+        }
+        if j >= klen {
+            j = 0;
+        }
+        k = k - 1;
+    }
+    k = 623;
+    while k > 0 {
+        let p = mt[i - 1];
+        mt[i] = ((mt[i] ^ ((p ^ (p >> 30)) * 1566083941)) - i) & mask32();
+        i = i + 1;
+        if i >= 624 {
+            mt[0] = mt[623];
+            i = 1;
+        }
+        k = k - 1;
+    }
+    mt[0] = 0x80000000;
+    mt[624] = 624;
+    return 0;
+}
+
+fn twist[&m](mt: &!m [int]) -> [] int {
+    var kk = 0;
+    while kk < 624 {
+        let y = (mt[kk] & 0x80000000) | (mt[(kk + 1) % 624] & 0x7fffffff);
+        var v = mt[(kk + 397) % 624] ^ (y >> 1);
+        if y % 2 == 1 {
+            v = v ^ 0x9908b0df;
+        }
+        mt[kk] = v;
+        kk = kk + 1;
+    }
+    mt[624] = 0;
+    return 0;
+}
+
+fn next32[&m](mt: &!m [int]) -> [] int {
+    if mt[624] >= 624 {
+        twist(mt);
+    }
+    var y = mt[mt[624]];
+    mt[624] = mt[624] + 1;
+    y = y ^ (y >> 11);
+    y = y ^ ((y << 7) & 0x9d2c5680);
+    y = y ^ ((y << 15) & 0xefc60000);
+    y = y ^ (y >> 18);
+    return y & mask32();
+}
+
+fn bit_length(n: int) -> [] int {
+    var k = 0;
+    var v = n;
+    while v > 0 {
+        v = v >> 1;
+        k = k + 1;
+    }
+    return k;
+}
+
+// `_randbelow(n)` for 0 < n < 2^32: `getrandbits(k)` until it is below n, k the bit length of n.
+fn below[&m](mt: &!m [int], n: int) -> [] int {
+    let k = bit_length(n);
+    var r = next32(mt) >> (32 - k);
+    while r >= n {
+        r = next32(mt) >> (32 - k);
+    }
+    return r;
+}
+
+fn random53[&m](mt: &!m [int]) -> [] float {
+    let a = next32(mt) >> 5;
+    let b = next32(mt) >> 6;
+    return (float_of(a) * 67108864.0 + float_of(b)) / 9007199254740992.0;
+}
+
+// Python's `round(x)` for x >= 0: half to even.
+fn round_even(x: float) -> [] int {
+    let f = truncate(x);
+    let r = x - float_of(f);
+    if r > 0.5 {
+        return f + 1;
+    }
+    if r < 0.5 {
+        return f;
+    }
+    if f % 2 == 0 {
+        return f;
+    }
+    return f + 1;
+}
+
+// Python's `round(x, 2)` as hundredths, for x >= 0: the decimal rounding of the exact binary value, half to even. 100 x is compared with the candidate tie k + 1/2 as 200 x against the odd
+// integer 2k + 1, with the product made exact by Dekker's two-product, so that 0.125 (a tie, exact in binary) goes to 0.12 and 2.675 (just below its tie in binary) to 2.67, as in Python.
+fn split_hi(a: float) -> [] float {
+    let c = 134217729.0 * a;
+    return c - (c - a);
+}
+
+fn round2(x: float) -> [] int {
+    let kf = truncate(x * 100.0);
+    let ah = split_hi(x);
+    let al = x - ah;
+    let bh = split_hi(200.0);
+    let bl = 200.0 - bh;
+    let p = x * 200.0;
+    let err = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    let diff = (p - float_of(2 * kf + 1)) + err;
+    if diff > 0.0 {
+        return kf + 1;
+    }
+    if diff < 0.0 {
+        return kf;
+    }
+    if kf % 2 == 0 {
+        return kf;
+    }
+    return kf + 1;
+}
+
+// A price of k hundredths as Python prints the float `round(x, 2)`: 0.1 for 10, 0.17 for 17. Prices are 0.10 to 0.30.
+fn print_price[&i](io: &!i Io, k: int) -> [io_write] int {
+    io.write_all(io, "0.");
+    if k % 10 == 0 {
+        io.print_nat(io, k / 10);
+    } else {
+        if k < 10 {
+            io.write_all(io, "0");
+        } else {
+            io.print_nat(io, k / 10);
+        }
+        io.print_nat(io, k % 10);
+    }
+    return 0;
+}
+
+fn gen_ev[&h, &i](heap: &!h Heap, io: &!i Io, v: int, t: int, ample: bool, seed: int) -> [heap, io_write] int {
+    let mtb = box_slice(heap, 625, 0);
+    let vb = box_slice(heap, 3 * v + 1, 0);
+    borrow mut mtb as &!m in {
+        borrow mut vb as &!w in {
+            let mt = contents(m);
+            let vv = contents(w);
+            seed_python(mt, seed * 1000003 + v * 101 + t);
+            var third = t / 3;
+            if third < 1 {
+                third = 1;
+            }
+            var q = 0;
+            while q < v {
+                let a = below(mt, third);
+                var d = (t - third + 1) + below(mt, third);
+                if d < a + t / 2 {
+                    d = a + t / 2;
+                }
+                if d > t {
+                    d = t;
+                }
+                let u = 0.25 + 0.25 * random53(mt);
+                var nd = round_even(u * 11.0 * float_of(d - a));
+                if nd < 1 {
+                    nd = 1;
+                }
+                vv[q] = a;
+                vv[v + q] = d;
+                vv[2 * v + q] = nd;
+                q = q + 1;
+            }
+            let pb = box_slice(heap, t + 1, 0);
+            borrow mut pb as &!pw in {
+                let pr = contents(pw);
+                let mid = float_of(t - 1) / 2.0;
+                var s = 0;
+                while s < t {
+                    var dd = float_of(s) - mid;
+                    if dd < 0.0 {
+                        dd = 0.0 - dd;
+                    }
+                    pr[s] = round2(0.10 + 0.20 * dd / mid);
+                    s = s + 1;
+                }
+                var chargers = v;
+                if !ample {
+                    chargers = v / 2;
+                    if chargers < 1 {
+                        chargers = 1;
+                    }
+                }
+                let grid = round_even(5.5 * float_of(v));
+                io.write_all(io, "// scripts/bench_scaling.py: V=");
+                io.print_nat(io, v);
+                io.write_all(io, ", T=");
+                io.print_nat(io, t);
+                if ample {
+                    io.write_all(io, ", ample chargers, seed ");
+                } else {
+                    io.write_all(io, ", tight chargers, seed ");
+                }
+                io.print_nat(io, seed);
+                io.write_all(io, "\nparam V = ");
+                io.print_nat(io, v);
+                io.write_all(io, ";\nparam T = ");
+                io.print_nat(io, t);
+                io.write_all(io, ";\nparam chargers = ");
+                io.print_nat(io, chargers);
+                io.write_all(io, ";\nparam grid = ");
+                io.print_nat(io, grid);
+                io.write_all(io, ";\nparam price = [");
+                var p = 0;
+                while p < t {
+                    if p > 0 {
+                        io.write_all(io, ", ");
+                    }
+                    print_price(io, pr[p]);
+                    p = p + 1;
+                }
+                io.write_all(io, "];\nparam need = [");
+                p = 0;
+                while p < v {
+                    if p > 0 {
+                        io.write_all(io, ", ");
+                    }
+                    io.print_nat(io, vv[2 * v + p]);
+                    p = p + 1;
+                }
+                io.write_all(io, "];\nparam avail = [");
+                p = 0;
+                while p < v {
+                    if p > 0 {
+                        io.write_all(io, ",\n                ");
+                    }
+                    var c = 0;
+                    while c < t {
+                        if c > 0 {
+                            io.write_all(io, ", ");
+                        }
+                        if vv[p] <= c && c < vv[v + p] {
+                            io.write_all(io, "1");
+                        } else {
+                            io.write_all(io, "0");
+                        }
+                        c = c + 1;
+                    }
+                    p = p + 1;
+                }
+                io.write_all(io, "];\n\nvar charge[0..V, 0..T] : real 0..11;\nvar on[0..V, 0..T]     : bool;\n\n");
+                io.write_all(io, "minimize cost: sum v in 0..V: sum t in 0..T: price[t] * charge[v,t];\n\nsubject to\n");
+                io.write_all(io, "    forall v in 0..V: energy:   sum t in 0..T: charge[v,t] >= need[v];\n");
+                io.write_all(io, "    forall v in 0..V: forall t in 0..T: plugged: on[v,t] <= avail[v*T+t];\n");
+                io.write_all(io, "    forall v in 0..V: forall t in 0..T: link:    charge[v,t] <= 11 * on[v,t];\n");
+                io.write_all(io, "    forall t in 0..T: chargers_free: sum v in 0..V: on[v,t] <= chargers;\n");
+                io.write_all(io, "    forall t in 0..T: grid_limit:    sum v in 0..V: charge[v,t] <= grid;\n");
+            }
+            unbox_slice(heap, pb);
+        }
+    }
+    unbox_slice(heap, vb);
+    unbox_slice(heap, mtb);
+    return 0;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    return refuse(io, "lab.usage", "usage: lab gen ev V T ample|tight SEED");
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi);
+    release(fs);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    var status = 2;
+    borrow mut heap as &!h in {
+        borrow mut io as &!i in {
+            borrow args as &g in {
+                if arg_count(g) == 7 && bytes.equal(arg(g, 1), "gen") && bytes.equal(arg(g, 2), "ev") {
+                    let v = parse_count(arg(g, 3));
+                    let t = parse_count(arg(g, 4));
+                    let seed = parse_count(arg(g, 6));
+                    let ample = bytes.equal(arg(g, 5), "ample");
+                    let tight = bytes.equal(arg(g, 5), "tight");
+                    if v >= 1 && v <= 1000 && t >= 2 && t <= 1000 && seed >= 0 && seed <= 1000000000 && (ample || tight) {
+                        status = gen_ev(h, i, v, t, ample, seed);
+                    } else {
+                        status = usage(i);
+                    }
+                } else {
+                    status = usage(i);
+                }
+            }
+        }
+    }
+    release(args);
+    release(heap);
+    release(io);
+    return status;
+}
