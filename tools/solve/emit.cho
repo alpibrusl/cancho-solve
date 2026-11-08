@@ -4,6 +4,7 @@ module solve.emit;
 
 // What `solve` prints: results, refusals, the expanded model, and the command surface as data (docs/design.md sections 5 and 12).
 
+import solve.exper;
 import solve.layout as l;
 import solve.lex as lx;
 import solve.verify as vf;
@@ -556,6 +557,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
     w = json.end_array(heap, w);
+    w = exper.put_table(heap, w);
     w = json.put_key(heap, w, "exit_codes");
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "0");
