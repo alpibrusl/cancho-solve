@@ -29,7 +29,7 @@ MUTANTS = [
     (M, "                                        if mp.compact(iv, fv, contents(b5), contents(b3)) < 0 {", "                                        if false {", "the rows are not compacted away"),
     (M, "            ctl[3] = 1;\n        }\n", "        }\n", "the root of the main search ignores the presolve's bounds"),
     (M, "                sd[jq] = pb[jq];\n", "                sd[jq] = sd[jq];\n", "the base bounds of the searches are the model's"),
-    (M, "mir_rounds(heap, iv, fv, opts, stats, pb, usepb, false, 300);", "mir_rounds(heap, iv, fv, opts, stats, pb, false, false, 300);", "(equivalent in effect) the first cut rounds ignore the presolve's bounds: on 24 tight models the rounds, the cuts found and kept and the root bound are identical, the rounds never meet a tightened bound"),
+    (M, "var kept = mir_rounds(heap, ints2, fl2, opts, stats, sdb, subb, false, 300, 0);", "var kept = mir_rounds(heap, ints2, fl2, opts, stats, sdb, false, false, 300, 0);", "(equivalent in effect) the first cut rounds ignore the presolve's bounds: on 24 tight models the rounds, the cuts found and kept and the root bound are identical, the rounds never meet a tightened bound"),
 ]
 
 only = [int(k) for k in os.environ.get("ONLY", "").split(",") if k]

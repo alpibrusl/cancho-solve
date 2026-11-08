@@ -14,7 +14,7 @@ MUTANTS = [
     (M, "                                    sfv[n + jc] = sdb[n + jc];\n", "", "the separation ignores the sub-MIP's upper bounds"),
     (M, "                                    sfv[jc] = sdb[jc];\n                                    sfv[n + jc] = sdb[n + jc];", "                                    sfv[jc] = sdb[n + jc];\n                                    sfv[n + jc] = sdb[jc];", "the sub-MIP's bounds are given to the separation the wrong way round"),
     (M, "        mcap = m0 + 1500;\n", "        mcap = m0 + 1;\n", "a sub-MIP's rounds have no room for cuts"),
-    (M, "contents(s1), true, true, 15);", "contents(s1), true, true, 1);", "a sub-MIP's rounds stop after one"),
+    (M, "contents(s1), true, true, 15, 0);", "contents(s1), true, true, 1, 0);", "a sub-MIP's rounds stop after one"),
     (M, "                                                if opts[4] / 4194304 % 2 == 0 {\n                                                    // the sub-MIP gets", "                                                if opts[4] / 4194304 % 2 == 1 {\n                                                    // the sub-MIP gets", "the bit that turns the rounds off turns them on"),
     (M, "                                                                stats[87] = stats[87] + contents(r3)[76];\n", "", "the rounds of the sub-MIPs are not counted"),
     (M, "                                                                while qq < l.ints_len() {\n                                                                    iv2[qq] = ints[qq];", "                                                                while qq < 10 {\n                                                                    iv2[qq] = ints[qq];", "the private copy of the model is cut short"),
