@@ -1,0 +1,245 @@
+edition 7;
+
+module solve.gomory;
+
+// Gomory mixed-integer cuts from the tableau rows of the final basis of a root LP (docs/design.md 22.18; the experiment `gomory`). The state is the sparse engine's (lib/lp/revised.cho): the matrix
+// M = [A | -I] over the columns z = (x, y), `M z = 0`, the basis `wi[8]` (the column at each position), `wi[9]` the position of each column (-1 when nonbasic), `wi[10]` the side of a nonbasic column
+// (0 at its lower bound, 1 at its upper), the values `z`, the bounds `lo`, `hi` (`wi[18..20]` offsets in `wf`) and the factorisation (`fi`, `ff`) of the basis, on which `rho = e_r B^-1` is one BTRAN.
+//
+// For a basic integer column x_i with value beta, f0 = frac(beta) in [0.01, 0.99], the row is `z_i + sum_j abar_j z_j = 0` with abar = rho M over the nonbasic j. A nonbasic column is written at its
+// bound, `z_j = b_j + t_j` (lower) or `b_j - t_j` (upper), t_j >= 0 (a fixed column is dropped, a free one refuses the row), so the row is `x_i + sum a_j t_j = beta` with a_j = abar_j or -abar_j. With
+// f_j = frac(a_j) the cut `sum c_j t_j >= 1` holds for every integer point, where c_j = min(f_j / f0, (1 - f_j) / (1 - f0)) for a structural integer column with an integer bound (the logicals are
+// continuous, a choice that only weakens the cut) and c_j = a_j / f0 or -a_j / (1 - f0) (a_j >= 0 or < 0) for the others. A coefficient abar under 1e-9 is not read, and a distance to an integer under
+// 1e-9 is taken as zero. The cut is put back on the model's columns (a logical y_i is the activity of row i) and handed to the pool of cmir.cho as a `<=` row.
+//
+// stats[95] counts the rows tried and stats[96] the cuts pooled, stats[94] is 1 when the experiment ran.
+
+import solve.cmir as cm;
+import solve.layout as l;
+import solve.sparse as sp;
+
+fn mag(x: float) -> [] float {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+fn ffloor(v: float) -> [] float {
+    if v > 1e15 || v < -1e15 {
+        return v;
+    }
+    let t = float_of(truncate(v));
+    if t > v {
+        return t - 1.0;
+    }
+    return t;
+}
+
+fn finite(v: float) -> [] bool {
+    return v > -1e20 && v < 1e20;
+}
+
+// The budget of 22.19. The cuts this call put in the pool are the slots `from` to `to`; they are taken by efficacy per nonzero, best first, while the total of nonzeros pooled (`count[200]`) stays within the
+// budget (`count[201]`): a cut that does not fit is not taken (its efficacy is put to 0, which `cmir.best_cut` skips), never cut short. Slots taken are marked by a negative efficacy while the loop runs.
+fn keep_within_budget[&c, &d, &e](si: &c [int], sf: &!d [float], count: &!e [int], n: int, nnzcap: int, mcap: int, from: int, to: int) -> [] int {
+    let ps = cm.o_ps(n, nnzcap);
+    let pe = cm.o_peff(n, mcap);
+    var live = true;
+    while live {
+        var best = 0 - 1;
+        var bs = 0.0;
+        var k = from;
+        while k < to {
+            if sf[pe + k] > 0.0 {
+                let sc = sf[pe + k] / float_of(si[ps + k + 1] - si[ps + k]);
+                if sc > bs {
+                    bs = sc;
+                    best = k;
+                }
+            }
+            k = k + 1;
+        }
+        if best < 0 {
+            live = false;
+        } else {
+            let nz = si[ps + best + 1] - si[ps + best];
+            if count[200] + nz <= count[201] {
+                count[200] = count[200] + nz;
+                sf[pe + best] = 0.0 - sf[pe + best];
+            } else {
+                sf[pe + best] = 0.0;
+                count[96] = count[96] - 1;
+            }
+        }
+    }
+    var k = from;
+    while k < to {
+        if sf[pe + k] < 0.0 {
+            sf[pe + k] = 0.0 - sf[pe + k];
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The cut of tableau row `br` into `v[2 m ..]` (dense, `<=` form) and its right side; returns 1 when the row gave a cut that went to the pool. `v` holds rho in [0, m), scores in [m, 2m), the cut in [2m, 2m + n).
+fn one_row[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q](ints: &a [int], fl: &b [float], wi: &c [int], wf: &d [float], fi: &e [int], ff: &!f [float], x: &g [float], si: &!k [int], sf: &!p [float], v: &!q [float], n: int, nnzcap: int, mcap: int, npool: int, br: int) -> [] int {
+    let m = ints[l.h_ncons()];
+    let o_z = wi[18];
+    let o_lo = wi[19];
+    let o_hi = wi[20];
+    let o_pos = wi[9];
+    let o_at = wi[10];
+    let o_cs = wi[4];
+    let o_cr = wi[5];
+    let o_cv = wi[28];
+    let g0 = 2 * m;
+    var q = 0;
+    while q < m {
+        v[q] = 0.0;
+        q = q + 1;
+    }
+    v[br] = 1.0;
+    sp.btran(fi, ff, v);
+    q = 0;
+    while q < n {
+        v[g0 + q] = 0.0;
+        q = q + 1;
+    }
+    let beta = wf[o_z + wi[wi[8] + br]];
+    let f0 = beta - ffloor(beta);
+    var rhs = 0.0 - 1.0;
+    var ok = true;
+    var j = 0;
+    while j < n + m && ok {
+        if wi[o_pos + j] < 0 {
+            var abar = 0.0;
+            if j < n {
+                var e = wi[o_cs + j];
+                while e < wi[o_cs + j + 1] {
+                    abar = abar + v[wi[o_cr + e]] * wf[o_cv + e];
+                    e = e + 1;
+                }
+            } else {
+                abar = 0.0 - v[j - n];
+            }
+            let lo = wf[o_lo + j];
+            let hi = wf[o_hi + j];
+            if mag(abar) >= 1e-9 && hi - lo >= 1e-9 {
+                var bnd = lo;
+                var aj = abar;
+                var upper = false;
+                if wi[o_at + j] == 1 {
+                    bnd = hi;
+                    aj = 0.0 - abar;
+                    upper = true;
+                }
+                if !finite(bnd) {
+                    ok = false;
+                } else {
+                    var isint = false;
+                    if j < n && si[j] == 1 && mag(bnd - ffloor(bnd + 0.5)) < 1e-9 {
+                        isint = true;
+                    }
+                    var cj = 0.0;
+                    if isint {
+                        var fj = aj - ffloor(aj);
+                        if fj < 1e-9 || fj > 1.0 - 1e-9 {
+                            fj = 0.0;
+                        }
+                        if fj <= f0 {
+                            cj = fj / f0;
+                        } else {
+                            cj = (1.0 - fj) / (1.0 - f0);
+                        }
+                    } else if aj > 0.0 {
+                        cj = aj / f0;
+                    } else {
+                        cj = (0.0 - aj) / (1.0 - f0);
+                    }
+                    if cj > 0.0 {
+                        // c_j t_j with t_j = z_j - lo (lower) or hi - z_j (upper): in `<=` form -c t <= -1
+                        var sg = 0.0 - cj;
+                        if upper {
+                            sg = cj;
+                        }
+                        rhs = rhs + sg * bnd;
+                        if j < n {
+                            v[g0 + j] = v[g0 + j] + sg;
+                        } else {
+                            var t = ints[l.row_start(j - n)];
+                            while t < ints[l.row_start(j - n + 1)] {
+                                let col = ints[l.term_col(t)];
+                                v[g0 + col] = v[g0 + col] + sg * fl[l.term_coef(t)];
+                                t = t + 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        j = j + 1;
+    }
+    if ok {
+        return cm.pool_push(si, sf, v, g0, x, rhs, n, nnzcap, mcap, npool, 150);
+    }
+    return 0;
+}
+
+// Up to `tries` tableau rows, the basic integer columns whose value is nearest to a half first; appends the cuts to the pool after its `npool` cuts. Returns the pool's new size; `count[95]` (the root's stats) gets the rows
+// tried added to it and `count[96]` the cuts pooled.
+pub fn separate[&h, &a, &b, &c, &d, &e, &f, &g, &k, &p, &z](heap: &!h Heap, ints: &a [int], fl: &b [float], wi: &c [int], wf: &d [float], fi: &e [int], ff: &!f [float], x: &g [float], si: &!k [int], sf: &!p [float], count: &!z [int], n: int, nnzcap: int, mcap: int, npool: int, tries: int) -> [heap] int {
+    let m = ints[l.h_ncons()];
+    let o_z = wi[18];
+    let wk = box_slice(heap, 2 * m + n + 8, 0.0);
+    var np = npool;
+    borrow mut wk as &!w in {
+        let v = contents(w);
+        var r = 0;
+        while r < m {
+            let col = wi[wi[8] + r];
+            v[m + r] = 0.0;
+            if col < n && si[col] == 1 {
+                let z = wf[o_z + col];
+                let f0 = z - ffloor(z);
+                if f0 >= 0.01 && f0 <= 0.99 {
+                    var sc = f0;
+                    if sc > 0.5 {
+                        sc = 1.0 - sc;
+                    }
+                    v[m + r] = sc;
+                }
+            }
+            r = r + 1;
+        }
+        var tried = 0;
+        while tried < tries {
+            var br = 0 - 1;
+            var bs = 0.0;
+            r = 0;
+            while r < m {
+                if v[m + r] > bs {
+                    bs = v[m + r];
+                    br = r;
+                }
+                r = r + 1;
+            }
+            if br < 0 {
+                tried = tries;
+            } else {
+                v[m + br] = 0.0;
+                tried = tried + 1;
+                count[95] = count[95] + 1;
+                let put = one_row(ints, fl, wi, wf, fi, ff, x, si, sf, v, n, nnzcap, mcap, np, br);
+                np = np + put;
+                count[96] = count[96] + put;
+            }
+        }
+        if count[201] > 0 {
+            let kept = keep_within_budget(si, sf, count, n, nnzcap, mcap, npool, np);
+        }
+    }
+    unbox_slice(heap, wk);
+    return np;
+}

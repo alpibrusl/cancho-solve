@@ -4,6 +4,7 @@ module solve.emit;
 
 // What `solve` prints: results, refusals, the expanded model, and the command surface as data (docs/design.md sections 5 and 12).
 
+import solve.exper;
 import solve.layout as l;
 import solve.lex as lx;
 import solve.verify as vf;
@@ -518,6 +519,30 @@ pub fn mip_report[&h, &i, &t, &a, &b, &c, &d, &e](heap: &!h Heap, io: &!i Io, te
         }
         w = json.end_array(heap, w);
     }
+    if len(stats) >= 208 && stats[94] == 1 {
+        w = json.put_key(heap, w, "gomory");
+        w = json.begin_array(heap, w);
+        w = json.put_int(heap, w, stats[95]);
+        w = json.put_int(heap, w, stats[96]);
+        if stats[201] > 0 {
+            w = json.put_int(heap, w, stats[200]);
+            w = json.put_int(heap, w, stats[201]);
+        }
+        w = json.end_array(heap, w);
+    }
+    if len(stats) >= 208 && stats[99] > 0 {
+        w = json.put_key(heap, w, "trace");
+        w = json.begin_array(heap, w);
+        var tk = 0;
+        while tk < stats[99] {
+            w = json.begin_array(heap, w);
+            w = json.put_int(heap, w, stats[100 + 2 * tk]);
+            w = json.put_float(heap, w, float_of(stats[101 + 2 * tk]) / 1000000000.0);
+            w = json.end_array(heap, w);
+            tk = tk + 1;
+        }
+        w = json.end_array(heap, w);
+    }
     w = json.end_object(heap, w);
     w = json.end_object(heap, w);
     print_json(heap, io, w);
@@ -556,6 +581,7 @@ pub fn introspect[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_write] int {
     w = command(heap, w, "introspect", "print this description", "nothing", "this object");
     w = command(heap, w, "skill", "print how to write a model, as text", "nothing", "text");
     w = json.end_array(heap, w);
+    w = exper.put_table(heap, w);
     w = json.put_key(heap, w, "exit_codes");
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "0");

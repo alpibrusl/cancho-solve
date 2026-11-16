@@ -10,6 +10,7 @@ module solve.mip;
 
 import solve.cmir as cm;
 import solve.cuts as cu;
+import solve.gomory as gm;
 import solve.heur as hu;
 import solve.layout as l;
 import solve.lpeng as le;
@@ -1439,6 +1440,37 @@ fn lp_round[&a, &b, &c, &d, &e, &f, &g, &k, &p, &q, &r, &u, &v](ints: &a [int], 
     return code;
 }
 
+// The trace of docs/design.md 22.18 (experiment `trace`): stats[97] the rounds of the root counted over all its runs, [99] the entries, [100 + 2k] the round and [101 + 2k] the LP value times 1e9 of entry k:
+// the first round and every round whose value differs from the last entry's by at least 1e-7, at most 50. Only when the caller's stats has room (the sub-MIPs' has not).
+fn trace_note[&e](stats: &!e [int], v: float) -> [] int {
+    if len(stats) < 208 {
+        return 0;
+    }
+    stats[97] = stats[97] + 1;
+    var vv = v;
+    if vv > 9.0e9 {
+        vv = 9.0e9;
+    }
+    if vv < 0.0 - 9.0e9 {
+        vv = 0.0 - 9.0e9;
+    }
+    var q = truncate(vv * 1000000000.0 + 0.5);
+    if vv < 0.0 {
+        q = truncate(vv * 1000000000.0 - 0.5);
+    }
+    let k = stats[99];
+    var moved = k == 0;
+    if k > 0 && (q - stats[99 + 2 * k] >= 100 || stats[99 + 2 * k] - q >= 100) {
+        moved = true;
+    }
+    if moved && k < 50 {
+        stats[100 + 2 * k] = stats[97];
+        stats[101 + 2 * k] = q;
+        stats[99] = k + 1;
+    }
+    return 0;
+}
+
 // The MIR cut rounds of docs/design.md 22.1 on the copy (ints2, fl2) of the model, which already holds its implied cuts: solve the root LP, separate from its point (lib/mip/cmir.cho), append the
 // best cuts as rows, and again, each LP from the optimal basis of the one before (22.3; experiment bit 1024 solves each from the slack basis, bit 512 solves each both ways and counts the
 // disagreements); stop when no cut is violated, after 300 rounds, after 150 rounds in a row in which the bound did not move by 1e-9 relative, or when the model with the new rows would no longer fit
@@ -1569,8 +1601,6 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             }
                                         }
                                     }
-                                    unbox_slice(heap, nff);
-                                    unbox_slice(heap, nfi);
                                     stats[79] = stats[79] + stv[0];
                                     if usewarm {
                                         stats[80] = stats[80] + 1;
@@ -1608,6 +1638,9 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                     pwi = nwi;
                                     okc = code == sx.s_optimal();
                                     have = okc;
+                                    if okc && opts[4] / 67108864 % 2 == 1 {
+                                        trace_note(stats, xv[n]);
+                                    }
                                     if okc {
                                         borrow pwi as &pb in {
                                             basic_flags(contents(pb), n, mcur, bsv);
@@ -1625,7 +1658,21 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             stall = 0;
                                         }
                                         last = fv[1];
-                                        let np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
+                                        var np = cm.separate(ints2, fl2, siv, sfv, xv, n, nnzcap, mcap, round * 137);
+                                        if opts[4] / 2147483648 % 2 == 1 && !small && pseed == 0 && round < 15 && (opts[4] / 4294967296 % 8 == 0 || stats[200] < opts[4] / 4294967296 % 8 * ints2[l.row_start(m0)]) {
+                                            // experiment `gomory` (design.md 22.18): cuts from the tableau rows of this LP's basis join the pool; `gomory-nnz=K` (22.19) caps what they add at K times the nonzeros of the rows before any cut
+                                            stats[94] = 1;
+                                            stats[201] = opts[4] / 4294967296 % 8 * ints2[l.row_start(m0)];
+                                            borrow pwi as &g1 in {
+                                                borrow pw as &g2 in {
+                                                    borrow nfi as &g3 in {
+                                                        borrow mut nff as &!g4 in {
+                                                            np = gm.separate(heap, ints2, fl2, contents(g1), contents(g2), contents(g3), contents(g4), xv, siv, sfv, stats, n, nnzcap, mcap, np, 30);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         found = found + np;
                                         var taken = 0;
                                         var pick = cm.best_cut(siv, sfv, n, nnzcap, mcap, np, taken);
@@ -1659,6 +1706,8 @@ fn mir_rounds[&h, &b, &c, &d, &e, &g](heap: &!h Heap, ints2: &!b [int], fl2: &!c
                                             fin = true;
                                         }
                                     }
+                                    unbox_slice(heap, nff);
+                                    unbox_slice(heap, nfi);
                                 }
                                 round = round + 1;
                             }

@@ -80,7 +80,7 @@ fn o_taken(n: int, nnzcap: int) -> [] int {
     return o_used(n, nnzcap) + 16;
 }
 
-fn o_ps(n: int, nnzcap: int) -> [] int {
+pub fn o_ps(n: int, nnzcap: int) -> [] int {
     return o_taken(n, nnzcap) + 320;
 }
 
@@ -100,7 +100,7 @@ fn o_prhs(n: int, mcap: int) -> [] int {
     return o_pf(n, mcap) + pnnz();
 }
 
-fn o_peff(n: int, mcap: int) -> [] int {
+pub fn o_peff(n: int, mcap: int) -> [] int {
     return o_prhs(n, mcap) + pcut();
 }
 
@@ -955,4 +955,52 @@ pub fn drop_aged[&a, &b, &c, &d, &e](ints2: &!a [int], fl2: &!b [float], m0: int
     ints2[l.h_ncons()] = w;
     ints2[l.h_nnz()] = nnz;
     return m - w;
+}
+
+// Puts the cut `g x <= rhs` (g dense over the n columns, from `g[goff]`) in the pool as slot `npool`, under the tests `emit` applies (violated at x by more than 1e-5, efficacy, a dynamism of at most 1e6) and at most `maxnz`
+// nonzeros (coefficients under 1e-12 are not stored); returns 1 when it went in, else 0. For separators that build a cut densely (docs/design.md 22.18).
+pub fn pool_push[&c, &d, &e, &f](si: &!c [int], sf: &!d [float], g: &e [float], goff: int, x: &f [float], rhs: float, n: int, nnzcap: int, mcap: int, npool: int, maxnz: int) -> [] int {
+    if npool >= pcut() {
+        return 0;
+    }
+    let ps = o_ps(n, nnzcap);
+    let pc = o_pc(n, nnzcap);
+    let pf = o_pf(n, mcap);
+    var at = si[ps + npool];
+    let start = at;
+    var lhs = 0.0;
+    var sq = 0.0;
+    var cmax = 0.0;
+    var cmin = 1e300;
+    var ok = true;
+    var j = 0;
+    while j < n {
+        let cv = g[goff + j];
+        if mag(cv) > 1e-12 {
+            if at + 1 > pnnz() || at - start >= maxnz {
+                ok = false;
+            } else {
+                si[pc + at] = j;
+                sf[pf + at] = cv;
+                at = at + 1;
+                lhs = lhs + cv * x[j];
+                sq = sq + cv * cv;
+                if mag(cv) > cmax {
+                    cmax = mag(cv);
+                }
+                if mag(cv) < cmin {
+                    cmin = mag(cv);
+                }
+            }
+        }
+        j = j + 1;
+    }
+    let viol = lhs - rhs;
+    if !ok || at - start < 1 || viol <= 1e-5 || sq <= 1e-18 || viol * viol / sq < 1e-12 || cmax > 1e6 * cmin {
+        return 0;
+    }
+    si[ps + npool + 1] = at;
+    sf[o_prhs(n, mcap) + npool] = rhs;
+    sf[o_peff(n, mcap) + npool] = viol * viol / sq;
+    return 1;
 }

@@ -13,3 +13,9 @@ name = "sparsetest"
 sources = ["lib/lp", "lib/model", "tools/sparsetest"]
 std = true
 out = "build/sparsetest"
+
+[[bin]]
+name = "lab"
+sources = ["tools/lab"]
+std = true
+out = "build/lab"
