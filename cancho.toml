@@ -1,6 +1,6 @@
 [package]
 name = "solve"
-cancho = "5a5dd1f21250b96b3f735a45b781489374219466"
+cancho = "51524d206283a5fec6e15e26a1b8d2825971e08a"
 
 [[bin]]
 name = "solve"
